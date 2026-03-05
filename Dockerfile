@@ -40,12 +40,15 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Switch to non-root user
 USER mcp
 
-# Expose port (configurable via MCP_PORT, default 8000)
-EXPOSE 8000
+# Default port (overridable via MCP_PORT env var)
+ENV MCP_PORT=8000
+
+# Expose port
+EXPOSE ${MCP_PORT}
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD python -c "import os,urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"MCP_PORT\",\"8000\")}/health')" || exit 1
 
-# Run with uvicorn
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run with uvicorn (shell form so $MCP_PORT is expanded at runtime)
+CMD uvicorn src.main:app --host 0.0.0.0 --port $MCP_PORT
