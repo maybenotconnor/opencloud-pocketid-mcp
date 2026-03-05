@@ -12,4 +12,5 @@ def create_auth() -> OIDCProxy:
         base_url=settings.mcp_base_url,
         jwt_signing_key=settings.jwt_signing_key,
         required_scopes=["openid", "profile", "email"],
+        verify_id_token=True,
     )
