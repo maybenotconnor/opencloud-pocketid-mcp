@@ -11,4 +11,5 @@ def create_auth() -> OIDCProxy:
         client_secret=settings.pocketid_client_secret,
         base_url=settings.mcp_base_url,
         jwt_signing_key=settings.jwt_signing_key,
+        required_scopes=["openid", "profile", "email"],
     )
