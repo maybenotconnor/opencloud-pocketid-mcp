@@ -29,7 +29,13 @@ def _get_client() -> WebDAVClient:
     return _client
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def list_files(
     path: Annotated[str, "Directory path to list, e.g. '/' or '/Documents'"] = "/",
 ) -> list[dict] | str:
@@ -58,7 +64,13 @@ def list_files(
         return format_error("list_files", str(e))
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def read_file(
     path: Annotated[str, "Path to the file to read, e.g. '/Documents/notes.txt'"],
 ) -> str:
@@ -99,7 +111,13 @@ def read_file(
         return format_error("read_file", str(e))
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def read_binary(
     path: Annotated[str, "Path to the file to read as base64"],
 ) -> str:
@@ -127,7 +145,14 @@ def read_binary(
         return format_error("read_binary", str(e))
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 def write_file(
     path: Annotated[str, "Destination path, e.g. '/Documents/notes.txt'"],
     content: Annotated[str, "Text content to write"],
@@ -157,7 +182,14 @@ def write_file(
         return format_error("write_file", str(e))
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 def mkdir(
     path: Annotated[str, "Directory path to create, e.g. '/Documents/Projects'"],
 ) -> str:
@@ -176,7 +208,14 @@ def mkdir(
         return format_error("mkdir", str(e))
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 def delete(
     path: Annotated[str, "Path to the file or directory to delete"],
 ) -> str:
@@ -192,7 +231,13 @@ def delete(
         return format_error("delete", str(e))
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "openWorldHint": True,
+    }
+)
 def move(
     source: Annotated[str, "Source path"],
     dest: Annotated[str, "Destination path"],
@@ -210,7 +255,13 @@ def move(
         return format_error("move", str(e))
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def copy(
     source: Annotated[str, "Source path"],
     dest: Annotated[str, "Destination path"],
@@ -228,7 +279,13 @@ def copy(
         return format_error("copy", str(e))
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def get_file_info(
     path: Annotated[str, "Path to the file or directory"],
 ) -> dict | str:
@@ -251,7 +308,13 @@ def get_file_info(
         return format_error("get_file_info", str(e))
 
 
-@webdav_server.tool
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def search_files(
     query: Annotated[str, "Search query — substring match or glob pattern (*, ?)"],
     path: Annotated[str, "Directory to search in"] = "/",

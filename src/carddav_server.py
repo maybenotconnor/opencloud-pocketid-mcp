@@ -194,7 +194,13 @@ def _vcard_to_full(vcard_data: str) -> dict:
 # --- Tools ---
 
 
-@carddav_server.tool
+@carddav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def list_addressbooks() -> list[dict] | str:
     """List all available address books."""
     try:
@@ -207,7 +213,13 @@ def list_addressbooks() -> list[dict] | str:
         return format_error("list_addressbooks", str(e))
 
 
-@carddav_server.tool
+@carddav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def get_contacts(
     addressbook: Annotated[str, "Address book name or path"],
     limit: Annotated[int, "Max contacts to return (default 50, max 200)"] = 50,
@@ -226,7 +238,13 @@ def get_contacts(
         return format_error("get_contacts", str(e))
 
 
-@carddav_server.tool
+@carddav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def search_contacts(
     query: Annotated[str, "Search text to match against name, email, phone, and org"],
     addressbook: Annotated[str, "Address book name or path (searches all if omitted)"] = "",
@@ -263,7 +281,13 @@ def search_contacts(
         return format_error("search_contacts", str(e))
 
 
-@carddav_server.tool
+@carddav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def get_contact(
     addressbook: Annotated[str, "Address book name or path"],
     uid: Annotated[str, "Contact UID"],
@@ -285,7 +309,13 @@ def get_contact(
         return format_error("get_contact", str(e))
 
 
-@carddav_server.tool
+@carddav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def create_contact(
     addressbook: Annotated[str, "Address book name or path"],
     name: Annotated[str, "Full name"],
@@ -328,7 +358,14 @@ def create_contact(
         return format_error("create_contact", str(e))
 
 
-@carddav_server.tool
+@carddav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 def update_contact(
     addressbook: Annotated[str, "Address book name or path"],
     uid: Annotated[str, "Contact UID to update"],
@@ -428,7 +465,14 @@ def update_contact(
         return format_error("update_contact", str(e))
 
 
-@carddav_server.tool
+@carddav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 def delete_contact(
     addressbook: Annotated[str, "Address book name or path"],
     uid: Annotated[str, "Contact UID to delete"],

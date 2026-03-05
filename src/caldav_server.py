@@ -114,7 +114,13 @@ def _todo_to_dict(todo: caldav.Todo) -> dict:
 # --- Tools ---
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def list_calendars() -> list[dict] | str:
     """List all available calendars."""
     try:
@@ -131,7 +137,13 @@ def list_calendars() -> list[dict] | str:
         return format_error("list_calendars", str(e))
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def get_events(
     calendar: Annotated[str, "Calendar name or path"],
     start: Annotated[str, "Start date/time (ISO 8601), e.g. '2026-03-01' or '2026-03-01T09:00'"],
@@ -150,7 +162,13 @@ def get_events(
         return format_error("get_events", str(e))
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def create_event(
     calendar: Annotated[str, "Calendar name or path"],
     summary: Annotated[str, "Event title"],
@@ -186,7 +204,14 @@ def create_event(
         return format_error("create_event", str(e))
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 def update_event(
     calendar: Annotated[str, "Calendar name or path"],
     uid: Annotated[str, "Event UID to update"],
@@ -225,7 +250,14 @@ def update_event(
         return format_error("update_event", str(e))
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 def delete_event(
     calendar: Annotated[str, "Calendar name or path"],
     uid: Annotated[str, "Event UID to delete"],
@@ -242,7 +274,13 @@ def delete_event(
         return format_error("delete_event", str(e))
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def search_events(
     query: Annotated[str, "Search text to match against event summary and description"],
     calendar: Annotated[str, "Calendar name or path (searches all if omitted)"] = "",
@@ -278,7 +316,13 @@ def search_events(
         return format_error("search_events", str(e))
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def get_todos(
     calendar: Annotated[str, "Calendar name or path"],
     include_completed: Annotated[bool, "Include completed todos"] = False,
@@ -294,7 +338,13 @@ def get_todos(
         return format_error("get_todos", str(e))
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
 def create_todo(
     calendar: Annotated[str, "Calendar name or path"],
     summary: Annotated[str, "Todo title"],
@@ -330,7 +380,14 @@ def create_todo(
         return format_error("create_todo", str(e))
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 def update_todo(
     calendar: Annotated[str, "Calendar name or path"],
     uid: Annotated[str, "Todo UID to update"],
@@ -370,7 +427,14 @@ def update_todo(
         return format_error("update_todo", str(e))
 
 
-@caldav_server.tool
+@caldav_server.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 def complete_todo(
     calendar: Annotated[str, "Calendar name or path"],
     uid: Annotated[str, "Todo UID to mark complete"],
