@@ -13,10 +13,9 @@ from src.caldav_server import (
     create_event,
     create_todo,
     delete_event,
-    get_events,
+    find_events,
     get_todos,
     list_calendars,
-    search_events,
     update_event,
     update_todo,
 )
@@ -60,23 +59,43 @@ class TestListCalendars:
         assert result[0]["name"] == "Personal"
 
 
-class TestGetEvents:
-    def test_returns_events(self, mock_principal):
+class TestFindEvents:
+    def test_returns_events_by_date_range(self, mock_principal):
         _, calendar = mock_principal
         mock_event = MagicMock()
         mock_event.data = _make_event_data()
         calendar.search.return_value = [mock_event]
 
-        result = get_events("Personal", "2026-03-01", "2026-03-31")
+        result = find_events("Personal", start="2026-03-01", end="2026-03-31")
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["summary"] == "Test Event"
         assert result[0]["uid"] == "test-uid-123"
 
     def test_calendar_not_found(self, mock_principal):
-        result = get_events("Nonexistent", "2026-03-01", "2026-03-31")
+        result = find_events("Nonexistent", start="2026-03-01", end="2026-03-31")
         assert "Error" in result
         assert "not found" in result
+
+    def test_searches_by_text(self, mock_principal):
+        _, calendar = mock_principal
+        mock_event = MagicMock()
+        mock_event.data = _make_event_data(summary="Team Standup")
+        calendar.events.return_value = [mock_event]
+
+        result = find_events(query="standup")
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]["summary"] == "Team Standup"
+
+    def test_text_filter_excludes_non_matches(self, mock_principal):
+        _, calendar = mock_principal
+        mock_event = MagicMock()
+        mock_event.data = _make_event_data(summary="Team Standup")
+        calendar.events.return_value = [mock_event]
+
+        result = find_events(query="lunch")
+        assert len(result) == 0
 
 
 class TestCreateEvent:
@@ -116,19 +135,6 @@ class TestDeleteEvent:
         result = delete_event("Personal", "test-uid-123")
         assert "Deleted event" in result
         mock_event.delete.assert_called_once()
-
-
-class TestSearchEvents:
-    def test_finds_matching_events(self, mock_principal):
-        _, calendar = mock_principal
-        mock_event = MagicMock()
-        mock_event.data = _make_event_data(summary="Team Standup")
-        calendar.events.return_value = [mock_event]
-
-        result = search_events("standup")
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert result[0]["summary"] == "Team Standup"
 
 
 class TestGetTodos:

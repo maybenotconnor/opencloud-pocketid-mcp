@@ -1,4 +1,4 @@
-"""CalDAV tools for Radicale calendar management. 10 tools."""
+"""CalDAV tools for OpenCloud calendar management. 9 tools."""
 
 import uuid
 from datetime import datetime
@@ -144,22 +144,53 @@ def list_calendars() -> list[dict] | str:
         "openWorldHint": True,
     }
 )
-def get_events(
-    calendar: Annotated[str, "Calendar name or path"],
-    start: Annotated[str, "Start date/time (ISO 8601), e.g. '2026-03-01' or '2026-03-01T09:00'"],
-    end: Annotated[str, "End date/time (ISO 8601)"],
+def find_events(
+    calendar: Annotated[str, "Calendar name or path (searches all calendars if empty)"] = "",
+    start: Annotated[str, "Start date/time (ISO 8601), e.g. '2026-03-01'. Required for date-range queries"] = "",
+    end: Annotated[str, "End date/time (ISO 8601). Required for date-range queries"] = "",
+    query: Annotated[str, "Text to match against summary and description"] = "",
+    limit: Annotated[int, "Max results (default 50, max 200)"] = 50,
 ) -> list[dict] | str:
-    """Get events in a date range. Expands recurring events."""
+    """Find events by date range and/or text search. Provide start+end for date filtering, query for text search, or both."""
     try:
-        cal = _resolve_calendar(calendar)
-        start_dt = _parse_dt(start)
-        end_dt = _parse_dt(end)
-        events = cal.search(start=start_dt, end=end_dt, expand=True)
-        return [_event_to_dict(e) for e in events]
+        limit = min(max(limit, 1), 200)
+        principal = _get_principal()
+        calendars = (
+            [_resolve_calendar(calendar)] if calendar else principal.calendars()
+        )
+
+        results = []
+
+        for cal in calendars:
+            if len(results) >= limit:
+                break
+            try:
+                if start and end:
+                    start_dt = _parse_dt(start)
+                    end_dt = _parse_dt(end)
+                    events = cal.search(start=start_dt, end=end_dt, expand=True)
+                else:
+                    events = cal.events()
+            except Exception:
+                continue
+
+            query_lower = query.lower() if query else ""
+            for event in events:
+                if len(results) >= limit:
+                    break
+                d = _event_to_dict(event)
+                if query_lower:
+                    summary = d.get("summary", "").lower()
+                    desc = d.get("description", "").lower()
+                    if query_lower not in summary and query_lower not in desc:
+                        continue
+                results.append(d)
+
+        return results
     except ValueError as e:
-        return format_error("get_events", str(e))
+        return format_error("find_events", str(e))
     except Exception as e:
-        return format_error("get_events", str(e))
+        return format_error("find_events", str(e))
 
 
 @caldav_server.tool(
@@ -272,48 +303,6 @@ def delete_event(
         return format_error("delete_event", str(e))
     except Exception as e:
         return format_error("delete_event", str(e))
-
-
-@caldav_server.tool(
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "openWorldHint": True,
-    }
-)
-def search_events(
-    query: Annotated[str, "Search text to match against event summary and description"],
-    calendar: Annotated[str, "Calendar name or path (searches all if omitted)"] = "",
-) -> list[dict] | str:
-    """Search events by text. Matches against summary and description. Max 30 results."""
-    try:
-        principal = _get_principal()
-        calendars = (
-            [_resolve_calendar(calendar)] if calendar else principal.calendars()
-        )
-
-        results = []
-        query_lower = query.lower()
-
-        for cal in calendars:
-            try:
-                events = cal.events()
-            except Exception:
-                continue
-            for event in events:
-                if len(results) >= 30:
-                    break
-                d = _event_to_dict(event)
-                summary = d.get("summary", "").lower()
-                desc = d.get("description", "").lower()
-                if query_lower in summary or query_lower in desc:
-                    results.append(d)
-
-        return results
-    except ValueError as e:
-        return format_error("search_events", str(e))
-    except Exception as e:
-        return format_error("search_events", str(e))
 
 
 @caldav_server.tool(

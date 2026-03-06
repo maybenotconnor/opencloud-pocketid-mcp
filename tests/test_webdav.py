@@ -7,13 +7,12 @@ import pytest
 from src.webdav_server import (
     copy,
     delete,
+    find_files,
     get_file_info,
-    list_files,
     mkdir,
     move,
     read_binary,
     read_file,
-    search_files,
     write_file,
 )
 
@@ -26,14 +25,14 @@ def mock_client():
         yield client
 
 
-class TestListFiles:
-    def test_lists_directory(self, mock_client):
+class TestFindFiles:
+    def test_lists_single_directory(self, mock_client):
         mock_client.ls.return_value = [
             {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
             {"name": "/file.txt", "type": "file", "content_length": 100, "modified": "2026-01-01"},
             {"name": "/subdir", "type": "directory", "content_length": 0, "modified": "2026-01-02"},
         ]
-        result = list_files("/")
+        result = find_files("/", depth=1)
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["name"] == "file.txt"
@@ -41,8 +40,48 @@ class TestListFiles:
         assert result[1]["type"] == "directory"
 
     def test_rejects_path_traversal(self):
-        result = list_files("/../etc")
+        result = find_files("/../etc")
         assert "Error" in result
+
+    def test_filters_by_query(self, mock_client):
+        mock_client.ls.return_value = [
+            {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
+            {"name": "/readme.md", "type": "file", "content_length": 50, "modified": "2026-01-01"},
+            {"name": "/photo.jpg", "type": "file", "content_length": 200, "modified": "2026-01-02"},
+        ]
+        result = find_files("/", query="*.md", depth=1)
+        assert len(result) == 1
+        assert result[0]["name"] == "readme.md"
+
+    def test_filters_by_file_type(self, mock_client):
+        mock_client.ls.return_value = [
+            {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
+            {"name": "/file.txt", "type": "file", "content_length": 100, "modified": "2026-01-01"},
+            {"name": "/subdir", "type": "directory", "content_length": 0, "modified": "2026-01-02"},
+        ]
+        result = find_files("/", file_type="directory", depth=1)
+        assert len(result) == 1
+        assert result[0]["type"] == "directory"
+
+    def test_filters_by_modified_after(self, mock_client):
+        mock_client.ls.return_value = [
+            {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
+            {"name": "/old.txt", "type": "file", "content_length": 50, "modified": "2026-01-01T00:00:00+00:00"},
+            {"name": "/new.txt", "type": "file", "content_length": 50, "modified": "2026-03-05T12:00:00+00:00"},
+        ]
+        result = find_files("/", modified_after="2026-03-01", depth=1)
+        assert len(result) == 1
+        assert result[0]["name"] == "new.txt"
+
+    def test_respects_limit(self, mock_client):
+        items = [{"name": "/", "type": "directory", "content_length": 0, "modified": ""}]
+        for i in range(20):
+            items.append({"name": f"/file{i}.txt", "type": "file", "content_length": 10, "modified": "2026-01-01"})
+        mock_client.ls.return_value = items
+        result = find_files("/", depth=1, limit=5)
+        # 5 results + 1 truncation note
+        assert len(result) == 6
+        assert result[-1].get("note") is not None
 
 
 class TestReadFile:
@@ -128,7 +167,3 @@ class TestGetFileInfo:
         assert result["content_type"] == "text/plain"
 
 
-class TestSearchFiles:
-    def test_rejects_path_traversal(self):
-        result = search_files("test", "/../etc")
-        assert "Error" in result

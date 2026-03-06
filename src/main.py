@@ -19,9 +19,11 @@ mcp = FastMCP(
     name="OpenCloud MCP",
     auth=create_auth(),
     instructions=(
-        "OpenCloud MCP provides 27 tools for managing files (WebDAV), "
+        "OpenCloud MCP provides 24 tools for managing files (WebDAV), "
         "calendars/todos (CalDAV), and contacts (CardDAV). "
-        "Tools are prefixed: webdav_, caldav_, carddav_."
+        "Tools are prefixed: webdav_, caldav_, carddav_. "
+        "Use find_files, find_events, and find_contacts for flexible discovery "
+        "with optional filters (text search, date range, file type, etc.)."
     ),
 )
 

@@ -1,8 +1,9 @@
-"""WebDAV tools for OpenCloud file management. 10 tools."""
+"""WebDAV tools for OpenCloud file management. 9 tools."""
 
 import base64
 import posixpath
 import tempfile
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -36,32 +37,92 @@ def _get_client() -> WebDAVClient:
         "openWorldHint": True,
     }
 )
-def list_files(
-    path: Annotated[str, "Directory path to list, e.g. '/' or '/Documents'"] = "/",
+def find_files(
+    path: Annotated[str, "Root directory to search, e.g. '/' or '/Documents'"] = "/",
+    query: Annotated[str, "Name filter — substring or glob pattern (*, ?). Empty = all files"] = "",
+    modified_after: Annotated[str, "ISO 8601 datetime — only files modified after this, e.g. '2026-03-04'"] = "",
+    file_type: Annotated[str, "Filter by type: 'file', 'directory', or 'all'"] = "all",
+    depth: Annotated[int, "Max recursion depth. 0 = unlimited, 1 = single directory only"] = 0,
+    limit: Annotated[int, "Max results to return (default 100, max 500)"] = 100,
 ) -> list[dict] | str:
-    """List files and directories at the given path."""
+    """Find files and directories recursively with optional filters. Use depth=1 for single-directory listing."""
     try:
         path = sanitize_path(path)
         client = _get_client()
-        items = client.ls(path, detail=True)
-        results = []
-        for item in items:
-            # Skip the directory itself (webdav4 includes it)
-            item_path = item.get("name", "")
-            if item_path.rstrip("/") == path.rstrip("/"):
-                continue
-            results.append({
-                "name": posixpath.basename(item_path.rstrip("/")),
-                "path": item_path,
-                "size": item.get("content_length", 0),
-                "modified": item.get("modified", ""),
-                "type": "directory" if item.get("type") == "directory" else "file",
-            })
+        limit = min(max(limit, 1), 500)
+
+        cutoff = None
+        if modified_after:
+            cutoff = datetime.fromisoformat(modified_after)
+            if cutoff.tzinfo is None:
+                cutoff = cutoff.replace(tzinfo=timezone.utc)
+
+        results: list[dict] = []
+
+        def _walk(dir_path: str, current_depth: int) -> None:
+            if len(results) >= limit:
+                return
+            if depth > 0 and current_depth > depth:
+                return
+            try:
+                items = client.ls(dir_path, detail=True)
+            except Exception:
+                return
+            for item in items:
+                if len(results) >= limit:
+                    return
+                item_path = item.get("name", "")
+                if item_path.rstrip("/") == dir_path.rstrip("/"):
+                    continue
+                name = posixpath.basename(item_path.rstrip("/"))
+                is_dir = item.get("type") == "directory"
+                item_type = "directory" if is_dir else "file"
+
+                # Apply filters
+                if file_type != "all" and item_type != file_type:
+                    if is_dir:
+                        _walk(item_path, current_depth + 1)
+                    continue
+                if query and not matches_query(name, query):
+                    if is_dir:
+                        _walk(item_path, current_depth + 1)
+                    continue
+                if cutoff:
+                    mod_str = item.get("modified", "")
+                    if mod_str:
+                        try:
+                            mod_dt = datetime.fromisoformat(str(mod_str))
+                            if mod_dt.tzinfo is None:
+                                mod_dt = mod_dt.replace(tzinfo=timezone.utc)
+                            if mod_dt < cutoff:
+                                if is_dir:
+                                    _walk(item_path, current_depth + 1)
+                                continue
+                        except (ValueError, TypeError):
+                            pass
+
+                results.append({
+                    "name": name,
+                    "path": item_path,
+                    "size": item.get("content_length", 0),
+                    "modified": item.get("modified", ""),
+                    "type": item_type,
+                })
+
+                if is_dir:
+                    _walk(item_path, current_depth + 1)
+
+        _walk(path, 1)
+        results.sort(key=lambda r: r["path"])
+
+        if len(results) >= limit:
+            results.append({"note": f"Results truncated at {limit} matches"})
+
         return results
     except ValueError as e:
-        return format_error("list_files", str(e))
+        return format_error("find_files", str(e))
     except Exception as e:
-        return format_error("list_files", str(e))
+        return format_error("find_files", str(e))
 
 
 @webdav_server.tool(
@@ -308,56 +369,3 @@ def get_file_info(
         return format_error("get_file_info", str(e))
 
 
-@webdav_server.tool(
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "openWorldHint": True,
-    }
-)
-def search_files(
-    query: Annotated[str, "Search query — substring match or glob pattern (*, ?)"],
-    path: Annotated[str, "Directory to search in"] = "/",
-) -> list[dict] | str:
-    """Search for files by name. Case-insensitive substring or glob match. Max 50 results."""
-    try:
-        path = sanitize_path(path)
-        client = _get_client()
-        results = []
-
-        def _walk(dir_path: str) -> None:
-            if len(results) >= 50:
-                return
-            try:
-                items = client.ls(dir_path, detail=True)
-            except Exception:
-                return
-            for item in items:
-                if len(results) >= 50:
-                    return
-                item_path = item.get("name", "")
-                if item_path.rstrip("/") == dir_path.rstrip("/"):
-                    continue
-                name = posixpath.basename(item_path.rstrip("/"))
-                is_dir = item.get("type") == "directory"
-                if matches_query(name, query):
-                    results.append({
-                        "name": name,
-                        "path": item_path,
-                        "size": item.get("content_length", 0),
-                        "type": "directory" if is_dir else "file",
-                    })
-                if is_dir:
-                    _walk(item_path)
-
-        _walk(path)
-        results.sort(key=lambda r: r["path"])
-
-        if len(results) >= 50:
-            results.append({"note": "Results truncated at 50 matches"})
-
-        return results
-    except ValueError as e:
-        return format_error("search_files", str(e))
-    except Exception as e:
-        return format_error("search_files", str(e))

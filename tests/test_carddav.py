@@ -8,10 +8,9 @@ import vobject
 from src.carddav_server import (
     create_contact,
     delete_contact,
+    find_contacts,
     get_contact,
-    get_contacts,
     list_addressbooks,
-    search_contacts,
     update_contact,
 )
 
@@ -64,9 +63,9 @@ class TestListAddressbooks:
         assert result[0]["name"] == "Contacts"
 
 
-class TestGetContacts:
-    def test_returns_contacts(self, mock_principal, mock_vcards):
-        result = get_contacts("Contacts")
+class TestFindContacts:
+    def test_returns_all_contacts(self, mock_principal, mock_vcards):
+        result = find_contacts("Contacts")
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["name"] == "John Doe"
@@ -78,22 +77,20 @@ class TestGetContacts:
             for i in range(10)
         ]
         with patch("src.carddav_server._fetch_vcards", return_value=vcards):
-            result = get_contacts("Contacts", limit=3)
+            result = find_contacts("Contacts", limit=3)
             assert len(result) == 3
 
-
-class TestSearchContacts:
     def test_finds_by_name(self, mock_principal, mock_vcards):
-        result = search_contacts("john")
+        result = find_contacts(query="john")
         assert isinstance(result, list)
         assert len(result) == 1
 
     def test_case_insensitive(self, mock_principal, mock_vcards):
-        result = search_contacts("JOHN")
+        result = find_contacts(query="JOHN")
         assert len(result) == 1
 
     def test_no_match(self, mock_principal, mock_vcards):
-        result = search_contacts("zzzzz")
+        result = find_contacts(query="zzzzz")
         assert len(result) == 0
 
 

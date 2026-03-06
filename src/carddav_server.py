@@ -1,4 +1,4 @@
-"""CardDAV tools for OpenCloud contact management. 7 tools."""
+"""CardDAV tools for OpenCloud contact management. 6 tools."""
 
 import re
 import uuid
@@ -220,65 +220,48 @@ def list_addressbooks() -> list[dict] | str:
         "openWorldHint": True,
     }
 )
-def get_contacts(
-    addressbook: Annotated[str, "Address book name or path"],
+def find_contacts(
+    addressbook: Annotated[str, "Address book name or path (searches all if empty)"] = "",
+    query: Annotated[str, "Text to match against name, email, phone, and org. Empty = all contacts"] = "",
     limit: Annotated[int, "Max contacts to return (default 50, max 200)"] = 50,
 ) -> list[dict] | str:
-    """Get contacts from an address book (summary view). Sorted alphabetically."""
+    """Find contacts with optional text search. Returns summary view sorted alphabetically."""
     try:
         limit = min(max(limit, 1), 200)
-        book = _resolve_addressbook(addressbook)
-        vcards = _fetch_vcards(book)
-        results = [_vcard_to_summary(data) for _, data in vcards]
-        results.sort(key=lambda c: c.get("name", ""))
-        return results[:limit]
-    except ValueError as e:
-        return format_error("get_contacts", str(e))
-    except Exception as e:
-        return format_error("get_contacts", str(e))
 
-
-@carddav_server.tool(
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "openWorldHint": True,
-    }
-)
-def search_contacts(
-    query: Annotated[str, "Search text to match against name, email, phone, and org"],
-    addressbook: Annotated[str, "Address book name or path (searches all if omitted)"] = "",
-) -> list[dict] | str:
-    """Search contacts by text. Case-insensitive. Max 30 results."""
-    try:
         if addressbook:
             books = [_resolve_addressbook(addressbook)]
         else:
             books = [book for _, _, book in _list_addressbooks()]
 
         results = []
-        query_lower = query.lower()
+        query_lower = query.lower() if query else ""
 
         for book in books:
+            if len(results) >= limit:
+                break
             try:
                 vcards = _fetch_vcards(book)
             except Exception:
                 continue
             for _, data in vcards:
-                if len(results) >= 30:
+                if len(results) >= limit:
                     break
                 summary = _vcard_to_summary(data)
-                searchable = " ".join(
-                    str(v) for v in summary.values() if isinstance(v, str)
-                ).lower()
-                if query_lower in searchable:
-                    results.append(summary)
+                if query_lower:
+                    searchable = " ".join(
+                        str(v) for v in summary.values() if isinstance(v, str)
+                    ).lower()
+                    if query_lower not in searchable:
+                        continue
+                results.append(summary)
 
+        results.sort(key=lambda c: c.get("name", ""))
         return results
     except ValueError as e:
-        return format_error("search_contacts", str(e))
+        return format_error("find_contacts", str(e))
     except Exception as e:
-        return format_error("search_contacts", str(e))
+        return format_error("find_contacts", str(e))
 
 
 @carddav_server.tool(
