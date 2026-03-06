@@ -84,3 +84,5 @@ Find contacts with optional text search. Omit `query` to list all, provide it to
 - Calendar and addressbook names are case-insensitive (e.g., "personal" matches "Personal")
 - Date parameters accept ISO 8601 format: `"2026-03-05"` or `"2026-03-05T14:00"`
 - The `updates` parameter on update tools is a dict — only include fields you want to change
+- Events return timestamp fields: `created`, `last_modified`, `dtstamp` (ISO 8601 or null)
+- Todos return timestamp fields: `created`, `last_modified`, `dtstamp`, `completed` (ISO 8601 or null)

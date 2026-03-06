@@ -88,6 +88,9 @@ def _event_to_dict(event: caldav.Event) -> dict:
             "location": str(vevent.location.value) if hasattr(vevent, "location") else "",
             "description": str(vevent.description.value) if hasattr(vevent, "description") else "",
             "is_recurring": hasattr(vevent, "rrule"),
+            "created": _dt_to_str(vevent.created.value) if hasattr(vevent, "created") else None,
+            "last_modified": _dt_to_str(vevent.last_modified.value) if hasattr(vevent, "last_modified") else None,
+            "dtstamp": _dt_to_str(vevent.dtstamp.value) if hasattr(vevent, "dtstamp") else None,
         }
         return result
     except Exception:
@@ -106,6 +109,10 @@ def _todo_to_dict(todo: caldav.Todo) -> dict:
             "status": str(vtodo.status.value) if hasattr(vtodo, "status") else "",
             "priority": int(vtodo.priority.value) if hasattr(vtodo, "priority") else None,
             "description": str(vtodo.description.value) if hasattr(vtodo, "description") else "",
+            "created": _dt_to_str(vtodo.created.value) if hasattr(vtodo, "created") else None,
+            "last_modified": _dt_to_str(vtodo.last_modified.value) if hasattr(vtodo, "last_modified") else None,
+            "dtstamp": _dt_to_str(vtodo.dtstamp.value) if hasattr(vtodo, "dtstamp") else None,
+            "completed": _dt_to_str(vtodo.completed.value) if hasattr(vtodo, "completed") else None,
         }
     except Exception:
         return {"uid": "", "summary": "(parse error)"}
@@ -227,6 +234,10 @@ def create_event(
         uid = str(uuid.uuid4())
         vevent.add("uid").value = uid
 
+        now = datetime.now(tz=utc)
+        vevent.add("created").value = now
+        vevent.add("dtstamp").value = now
+
         event = cal.save_event(vcal.serialize())
         return {"uid": uid, "url": str(event.url)}
     except ValueError as e:
@@ -271,6 +282,16 @@ def update_event(
                 vevent.description.value = updates["description"]
             else:
                 vevent.add("description").value = updates["description"]
+
+        now = datetime.now(tz=utc)
+        if hasattr(vevent, "last_modified"):
+            vevent.last_modified.value = now
+        else:
+            vevent.add("last-modified").value = now
+        if hasattr(vevent, "dtstamp"):
+            vevent.dtstamp.value = now
+        else:
+            vevent.add("dtstamp").value = now
 
         event.data = vcal.serialize()
         event.save()
@@ -361,6 +382,10 @@ def create_todo(
 
         vtodo.add("status").value = "NEEDS-ACTION"
 
+        now = datetime.now(tz=utc)
+        vtodo.add("created").value = now
+        vtodo.add("dtstamp").value = now
+
         cal.save_todo(vcal.serialize())
         return {"uid": uid}
     except ValueError as e:
@@ -407,6 +432,16 @@ def update_todo(
             else:
                 vtodo.add("description").value = updates["description"]
 
+        now = datetime.now(tz=utc)
+        if hasattr(vtodo, "last_modified"):
+            vtodo.last_modified.value = now
+        else:
+            vtodo.add("last-modified").value = now
+        if hasattr(vtodo, "dtstamp"):
+            vtodo.dtstamp.value = now
+        else:
+            vtodo.add("dtstamp").value = now
+
         todo.data = vcal.serialize()
         todo.save()
         return f"Updated todo {uid}"
@@ -435,15 +470,26 @@ def complete_todo(
         vcal = vobject.readOne(todo.data)
         vtodo = vcal.vtodo
 
+        now = datetime.now(tz=utc)
+
         if hasattr(vtodo, "status"):
             vtodo.status.value = "COMPLETED"
         else:
             vtodo.add("status").value = "COMPLETED"
 
         if hasattr(vtodo, "completed"):
-            vtodo.completed.value = datetime.now(tz=utc)
+            vtodo.completed.value = now
         else:
-            vtodo.add("completed").value = datetime.now(tz=utc)
+            vtodo.add("completed").value = now
+
+        if hasattr(vtodo, "last_modified"):
+            vtodo.last_modified.value = now
+        else:
+            vtodo.add("last-modified").value = now
+        if hasattr(vtodo, "dtstamp"):
+            vtodo.dtstamp.value = now
+        else:
+            vtodo.add("dtstamp").value = now
 
         todo.data = vcal.serialize()
         todo.save()

@@ -21,22 +21,30 @@ from src.caldav_server import (
 )
 
 
-def _make_event_data(summary="Test Event", uid="test-uid-123"):
+def _make_event_data(summary="Test Event", uid="test-uid-123", include_timestamps=True):
     cal = vobject.iCalendar()
     vevent = cal.add("vevent")
     vevent.add("summary").value = summary
     vevent.add("uid").value = uid
     vevent.add("dtstart").value = datetime(2026, 3, 5, 10, 0, tzinfo=utc)
     vevent.add("dtend").value = datetime(2026, 3, 5, 11, 0, tzinfo=utc)
+    if include_timestamps:
+        vevent.add("created").value = datetime(2026, 3, 4, 9, 0, tzinfo=utc)
+        vevent.add("last-modified").value = datetime(2026, 3, 4, 10, 0, tzinfo=utc)
+        vevent.add("dtstamp").value = datetime(2026, 3, 4, 9, 0, tzinfo=utc)
     return cal.serialize()
 
 
-def _make_todo_data(summary="Test Todo", uid="todo-uid-123"):
+def _make_todo_data(summary="Test Todo", uid="todo-uid-123", include_timestamps=True):
     cal = vobject.iCalendar()
     vtodo = cal.add("vtodo")
     vtodo.add("summary").value = summary
     vtodo.add("uid").value = uid
     vtodo.add("status").value = "NEEDS-ACTION"
+    if include_timestamps:
+        vtodo.add("created").value = datetime(2026, 3, 4, 9, 0, tzinfo=utc)
+        vtodo.add("last-modified").value = datetime(2026, 3, 4, 10, 0, tzinfo=utc)
+        vtodo.add("dtstamp").value = datetime(2026, 3, 4, 9, 0, tzinfo=utc)
     return cal.serialize()
 
 
@@ -97,6 +105,30 @@ class TestFindEvents:
         result = find_events(query="lunch")
         assert len(result) == 0
 
+    def test_event_includes_timestamps(self, mock_principal):
+        _, calendar = mock_principal
+        mock_event = MagicMock()
+        mock_event.data = _make_event_data()
+        calendar.search.return_value = [mock_event]
+
+        result = find_events("Personal", start="2026-03-01", end="2026-03-31")
+        assert result[0]["created"] is not None
+        assert result[0]["last_modified"] is not None
+        assert result[0]["dtstamp"] is not None
+        assert "2026-03-04" in result[0]["created"]
+
+    def test_event_without_timestamps_returns_none(self, mock_principal):
+        _, calendar = mock_principal
+        mock_event = MagicMock()
+        mock_event.data = _make_event_data(include_timestamps=False)
+        calendar.search.return_value = [mock_event]
+
+        result = find_events("Personal", start="2026-03-01", end="2026-03-31")
+        assert result[0]["created"] is None
+        assert result[0]["last_modified"] is None
+        # dtstamp is auto-set by vobject (RFC 5545 requires it), so it's never None
+        assert result[0]["dtstamp"] is not None
+
 
 class TestCreateEvent:
     def test_creates_event(self, mock_principal):
@@ -113,6 +145,18 @@ class TestCreateEvent:
         assert "url" in result
         calendar.save_event.assert_called_once()
 
+    def test_create_event_sets_timestamps(self, mock_principal):
+        _, calendar = mock_principal
+        mock_saved = MagicMock()
+        mock_saved.url = "https://dav.example.com/event/123"
+        calendar.save_event.return_value = mock_saved
+
+        create_event("Personal", "New Meeting", "2026-03-10T14:00", "2026-03-10T15:00")
+
+        ical_data = calendar.save_event.call_args[0][0]
+        assert "CREATED:" in ical_data
+        assert "DTSTAMP:" in ical_data
+
 
 class TestUpdateEvent:
     def test_updates_summary(self, mock_principal):
@@ -124,6 +168,17 @@ class TestUpdateEvent:
         result = update_event("Personal", "test-uid-123", {"summary": "Updated"})
         assert "Updated event" in result
         mock_event.save.assert_called_once()
+
+    def test_update_event_sets_last_modified(self, mock_principal):
+        _, calendar = mock_principal
+        mock_event = MagicMock()
+        mock_event.data = _make_event_data()
+        calendar.event_by_uid.return_value = mock_event
+
+        update_event("Personal", "test-uid-123", {"summary": "Updated"})
+
+        saved_data = mock_event.data
+        assert "LAST-MODIFIED:" in saved_data
 
 
 class TestDeleteEvent:
@@ -149,6 +204,18 @@ class TestGetTodos:
         assert len(result) == 1
         assert result[0]["summary"] == "Test Todo"
 
+    def test_todo_includes_timestamps(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data()
+        calendar.todos.return_value = [mock_todo]
+
+        result = get_todos("Personal")
+        assert result[0]["created"] is not None
+        assert result[0]["last_modified"] is not None
+        assert result[0]["dtstamp"] is not None
+        assert result[0]["completed"] is None
+
 
 class TestCreateTodo:
     def test_creates_todo(self, mock_principal):
@@ -158,6 +225,15 @@ class TestCreateTodo:
         assert isinstance(result, dict)
         assert "uid" in result
         calendar.save_todo.assert_called_once()
+
+    def test_create_todo_sets_timestamps(self, mock_principal):
+        _, calendar = mock_principal
+
+        create_todo("Personal", "Buy groceries")
+
+        ical_data = calendar.save_todo.call_args[0][0]
+        assert "CREATED:" in ical_data
+        assert "DTSTAMP:" in ical_data
 
 
 class TestUpdateTodo:
@@ -170,6 +246,17 @@ class TestUpdateTodo:
         result = update_todo("Personal", "todo-uid-123", {"summary": "Updated Todo"})
         assert "Updated todo" in result
         mock_todo.save.assert_called_once()
+
+    def test_update_todo_sets_last_modified(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data()
+        calendar.todo_by_uid.return_value = mock_todo
+
+        update_todo("Personal", "todo-uid-123", {"summary": "Updated Todo"})
+
+        saved_data = mock_todo.data
+        assert "LAST-MODIFIED:" in saved_data
 
 
 class TestCompleteTodo:
