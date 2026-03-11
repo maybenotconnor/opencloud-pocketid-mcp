@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.webdav_server import (
+    _build_kql,
+    _parse_search_response,
     copy,
     delete,
     find_files,
@@ -13,6 +15,7 @@ from src.webdav_server import (
     move,
     read_binary,
     read_file,
+    search_files,
     write_file,
 )
 
@@ -165,5 +168,191 @@ class TestGetFileInfo:
         assert isinstance(result, dict)
         assert result["size"] == 512
         assert result["content_type"] == "text/plain"
+
+
+# --- Server-side search tests ---
+
+_SAMPLE_207 = """\
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc-123-def/Documents/report.pdf</d:href>
+    <d:propstat>
+      <d:prop>
+        <oc:name>report.pdf</oc:name>
+        <d:resourcetype/>
+        <d:getcontentlength>204800</d:getcontentlength>
+        <d:getlastmodified>Mon, 10 Mar 2026 12:00:00 GMT</d:getlastmodified>
+        <d:getcontenttype>application/pdf</d:getcontenttype>
+        <oc:score>0.85</oc:score>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc-123-def/Budget/2026.xlsx</d:href>
+    <d:propstat>
+      <d:prop>
+        <oc:name>2026.xlsx</oc:name>
+        <d:resourcetype/>
+        <d:getcontentlength>51200</d:getcontentlength>
+        <d:getlastmodified>Sun, 09 Mar 2026 08:00:00 GMT</d:getlastmodified>
+        <d:getcontenttype>application/vnd.openxmlformats-officedocument.spreadsheetml.sheet</d:getcontenttype>
+        <oc:score>0.42</oc:score>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"""
+
+_SAMPLE_DIR_207 = """\
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc-123-def/Projects</d:href>
+    <d:propstat>
+      <d:prop>
+        <oc:name>Projects</oc:name>
+        <d:resourcetype><d:collection/></d:resourcetype>
+        <d:getlastmodified>Mon, 10 Mar 2026 12:00:00 GMT</d:getlastmodified>
+        <oc:score>0.5</oc:score>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"""
+
+
+class TestSearchFiles:
+    @pytest.fixture(autouse=True)
+    def mock_httpx(self):
+        """Mock httpx.request for search tests (search uses httpx directly, not webdav4)."""
+        with patch("src.webdav_server.httpx.request") as mock_req:
+            self.mock_request = mock_req
+            yield mock_req
+
+    def _mock_207(self, xml=_SAMPLE_207):
+        resp = MagicMock()
+        resp.status_code = 207
+        resp.text = xml
+        self.mock_request.return_value = resp
+
+    def test_content_search(self):
+        self._mock_207()
+        result = search_files(content="budget")
+        assert isinstance(result, list)
+        assert len(result) == 2
+        # Should be sorted by score descending
+        assert result[0]["name"] == "report.pdf"
+        assert result[0]["score"] == 0.85
+        assert result[1]["name"] == "2026.xlsx"
+        # Verify KQL built correctly
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        assert "content:budget" in body
+
+    def test_name_search(self):
+        self._mock_207()
+        result = search_files(name="*.pdf")
+        assert isinstance(result, list)
+        call_kwargs = self.mock_request.call_args
+        body = call_kwargs.kwargs.get("content", "")
+        assert "name:*.pdf" in body
+
+    def test_combined_params(self):
+        self._mock_207()
+        search_files(content="report", mediatype="pdf", mtime="today")
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        assert "content:report" in body
+        assert "mediatype:pdf" in body
+        assert "mtime:today" in body
+
+    def test_cleans_space_href(self):
+        self._mock_207()
+        result = search_files(content="budget")
+        # Path should have spaces prefix stripped
+        assert result[0]["path"] == "/Documents/report.pdf"
+        assert result[1]["path"] == "/Budget/2026.xlsx"
+
+    def test_empty_params_returns_error(self):
+        result = search_files()
+        assert isinstance(result, str)
+        assert "Error" in result
+        assert "At least one" in result
+
+    def test_handles_non_207(self):
+        resp = MagicMock()
+        resp.status_code = 500
+        self.mock_request.return_value = resp
+        result = search_files(content="test")
+        assert isinstance(result, str)
+        assert "Error" in result
+        assert "500" in result
+
+    def test_handles_auth_error(self):
+        resp = MagicMock()
+        resp.status_code = 401
+        self.mock_request.return_value = resp
+        result = search_files(content="test")
+        assert isinstance(result, str)
+        assert "Authentication" in result
+
+    def test_handles_501(self):
+        resp = MagicMock()
+        resp.status_code = 501
+        self.mock_request.return_value = resp
+        result = search_files(content="test")
+        assert isinstance(result, str)
+        assert "not available" in result
+
+    def test_parses_directories(self):
+        self._mock_207(xml=_SAMPLE_DIR_207)
+        result = search_files(name="Projects")
+        assert len(result) == 1
+        assert result[0]["type"] == "directory"
+        assert result[0]["size"] == 0
+
+    def test_respects_limit(self):
+        self._mock_207()
+        search_files(content="budget", limit=300)
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        # Should be clamped to 200
+        assert "<oc:limit>200</oc:limit>" in body
+
+    def test_respects_limit_minimum(self):
+        self._mock_207()
+        search_files(content="budget", limit=0)
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        assert "<oc:limit>1</oc:limit>" in body
+
+
+class TestBuildKql:
+    def test_single_content(self):
+        assert _build_kql("budget", "", "", "") == "content:budget"
+
+    def test_single_name(self):
+        assert _build_kql("", "*.pdf", "", "") == "name:*.pdf"
+
+    def test_combined(self):
+        result = _build_kql("report", "*.pdf", "document", "today")
+        assert result == "content:report name:*.pdf mediatype:document mtime:today"
+
+    def test_empty(self):
+        assert _build_kql("", "", "", "") == ""
+
+
+class TestParseSearchResponse:
+    def test_parses_files(self):
+        results = _parse_search_response(_SAMPLE_207)
+        assert len(results) == 2
+        assert results[0]["name"] == "report.pdf"
+        assert results[0]["size"] == 204800
+        assert results[0]["content_type"] == "application/pdf"
+        assert results[0]["type"] == "file"
+
+    def test_parses_directory(self):
+        results = _parse_search_response(_SAMPLE_DIR_207)
+        assert len(results) == 1
+        assert results[0]["type"] == "directory"
+
+    def test_empty_response(self):
+        results = _parse_search_response('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>')
+        assert results == []
 
 

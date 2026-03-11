@@ -6,11 +6,11 @@ Use this as connector instructions to teach Claude how to use the OpenCloud MCP 
 
 ## Overview
 
-OpenCloud MCP provides 24 tools across three services: **WebDAV** (files), **CalDAV** (calendars/todos), and **CardDAV** (contacts). All tools are prefixed by their service namespace: `webdav_`, `caldav_`, `carddav_`.
+OpenCloud MCP provides 25 tools across three services: **WebDAV** (files), **CalDAV** (calendars/todos), and **CardDAV** (contacts). All tools are prefixed by their service namespace: `webdav_`, `caldav_`, `carddav_`.
 
-## Discovery Tools — the `find_*` pattern
+## Discovery Tools — the `find_*` and `search_*` pattern
 
-Three flexible discovery tools share a consistent design: all parameters are optional, combine any filters you need.
+Three flexible discovery tools share a consistent design: all parameters are optional, combine any filters you need. Additionally, `search_files` provides fast server-side indexed search with full-text content support.
 
 ### webdav_find_files
 Find files and directories with optional filters. All params optional.
@@ -25,6 +25,22 @@ Find files and directories with optional filters. All params optional.
 | Only directories | `find_files(file_type="directory")` |
 | Combine: recent Python files | `find_files(path="/Projects", query="*.py", modified_after="2026-03-01")` |
 | Shallow listing with filter | `find_files(path="/Photos", query="*.jpg", depth=1)` |
+
+### webdav_search_files
+Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika). Faster than find_files for large file trees. At least one param required; all combine with AND logic.
+
+| Use case | Parameters |
+|---|---|
+| Content search | `search_files(content="quarterly report")` |
+| Find by name pattern | `search_files(name="*.pdf")` |
+| Find by media type | `search_files(mediatype="image")` |
+| Recent documents | `search_files(mediatype="document", mtime="last 7 days")` |
+| Combined filters | `search_files(content="budget", mediatype="spreadsheet")` |
+| Paginated results | `search_files(name="*.txt", limit=20, offset=40)` |
+
+> **When to use `search_files` vs `find_files`:**
+> - `search_files` — fast server-side indexed search, supports content search inside files, best for large trees
+> - `find_files` — client-side recursive walk, supports exact date filters and depth control, works without search index
 
 ### caldav_find_events
 Find calendar events by date range and/or text search. Use `start`+`end` for date filtering, `query` for text, or both.

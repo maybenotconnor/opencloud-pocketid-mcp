@@ -1,11 +1,14 @@
-"""WebDAV tools for OpenCloud file management. 9 tools."""
+"""WebDAV tools for OpenCloud file management. 10 tools."""
 
 import base64
 import posixpath
+import re
 import tempfile
 from datetime import datetime, timezone
 from typing import Annotated
+from urllib.parse import unquote
 
+import httpx
 from fastmcp import FastMCP
 from webdav4.client import Client as WebDAVClient, ResourceAlreadyExists
 
@@ -367,5 +370,163 @@ def get_file_info(
         return format_error("get_file_info", str(e))
     except Exception as e:
         return format_error("get_file_info", str(e))
+
+
+# --- Server-side search helpers ---
+
+def _build_kql(content: str, name: str, mediatype: str, mtime: str) -> str:
+    """Build a KQL query string from structured parameters."""
+    parts: list[str] = []
+    if content:
+        parts.append(f"content:{content}")
+    if name:
+        parts.append(f"name:{name}")
+    if mediatype:
+        parts.append(f"mediatype:{mediatype}")
+    if mtime:
+        parts.append(f"mtime:{mtime}")
+    return " ".join(parts)
+
+
+def _xml_escape(text: str) -> str:
+    """Escape special characters for safe XML embedding."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _get_search_url() -> str:
+    """Return the REPORT endpoint for server-side search."""
+    base = settings.opencloud_url.rstrip("/")
+    return f"{base}/remote.php/dav/files/{settings.opencloud_username}"
+
+
+def _parse_search_response(xml_text: str) -> list[dict]:
+    """Parse a 207 multistatus XML response from oc:search-files."""
+    results: list[dict] = []
+
+    for block in re.findall(
+        r"<(?:\w+:)?response>(.*?)</(?:\w+:)?response>", xml_text, re.DOTALL
+    ):
+        entry: dict = {}
+
+        # Name
+        m = re.search(r"<oc:name>(.*?)</oc:name>", block)
+        entry["name"] = m.group(1) if m else ""
+
+        # Href → cleaned path
+        m = re.search(r"<(?:\w+:)?href>(.*?)</(?:\w+:)?href>", block)
+        if m:
+            raw_path = unquote(m.group(1))
+            # Strip /remote.php/dav/spaces/{uuid}/ prefix
+            cleaned = re.sub(r"^/remote\.php/dav/spaces/[^/]+", "", raw_path)
+            entry["path"] = cleaned or "/"
+        else:
+            entry["path"] = ""
+
+        # Type: directory if <d:collection/> present
+        if re.search(r"<(?:\w+:)?collection\s*/?>", block):
+            entry["type"] = "directory"
+        else:
+            entry["type"] = "file"
+
+        # Size
+        m = re.search(r"<(?:\w+:)?getcontentlength>(.*?)</(?:\w+:)?getcontentlength>", block)
+        entry["size"] = int(m.group(1)) if m else 0
+
+        # Modified
+        m = re.search(r"<(?:\w+:)?getlastmodified>(.*?)</(?:\w+:)?getlastmodified>", block)
+        entry["modified"] = m.group(1) if m else ""
+
+        # Content type
+        m = re.search(r"<(?:\w+:)?getcontenttype>(.*?)</(?:\w+:)?getcontenttype>", block)
+        entry["content_type"] = m.group(1) if m else ""
+
+        # Score
+        m = re.search(r"<oc:score>(.*?)</oc:score>", block)
+        entry["score"] = float(m.group(1)) if m else 0.0
+
+        results.append(entry)
+
+    return results
+
+
+_SEARCH_XML_TEMPLATE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<oc:search-files xmlns:a="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <oc:search>
+    <oc:pattern>{query}</oc:pattern>
+    <oc:limit>{limit}</oc:limit>
+    <oc:offset>{offset}</oc:offset>
+  </oc:search>
+</oc:search-files>"""
+
+
+@webdav_server.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+)
+def search_files(
+    content: Annotated[str, "Full-text content search inside files (Tika), e.g. 'quarterly report'"] = "",
+    name: Annotated[str, "Filename pattern, e.g. '*.pdf', 'report*', 'README'"] = "",
+    mediatype: Annotated[str, "Filter: document, spreadsheet, presentation, pdf, image, video, audio, folder, archive"] = "",
+    mtime: Annotated[str, "Modified: 'today', 'last 7 days', 'last 30 days', 'this year', 'last year'"] = "",
+    limit: Annotated[int, "Max results (default 50, max 200)"] = 50,
+    offset: Annotated[int, "Pagination offset — skip first N results"] = 0,
+) -> list[dict] | str:
+    """Search files using OpenCloud's server-side search index. Supports full-text content search (Tika).
+    Faster than find_files for large file trees. All params combine with AND logic.
+    At least one search param (content, name, mediatype, mtime) is required."""
+    try:
+        # Validate at least one search param
+        if not any([content, name, mediatype, mtime]):
+            return format_error(
+                "search_files",
+                "At least one search parameter (content, name, mediatype, mtime) is required.",
+            )
+
+        kql = _build_kql(content, name, mediatype, mtime)
+        limit = min(max(limit, 1), 200)
+        offset = max(offset, 0)
+
+        body = _SEARCH_XML_TEMPLATE.format(
+            query=_xml_escape(kql),
+            limit=limit,
+            offset=offset,
+        )
+
+        resp = httpx.request(
+            "REPORT",
+            _get_search_url(),
+            auth=(settings.opencloud_username, settings.opencloud_password),
+            headers={"Content-Type": "application/xml"},
+            content=body,
+            follow_redirects=True,
+            timeout=30,
+        )
+
+        if resp.status_code == 401:
+            return format_error("search_files", "Authentication failed. Check credentials.")
+        if resp.status_code == 501:
+            return format_error(
+                "search_files",
+                "Server-side search is not available. The search index may not be configured.",
+            )
+        if resp.status_code != 207:
+            return format_error("search_files", f"Unexpected response: HTTP {resp.status_code}")
+
+        results = _parse_search_response(resp.text)
+        # Sort by relevance score descending
+        results.sort(key=lambda r: r.get("score", 0), reverse=True)
+
+        return results
+    except Exception as e:
+        return format_error("search_files", str(e))
 
 
