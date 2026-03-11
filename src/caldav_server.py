@@ -333,19 +333,75 @@ def delete_event(
         "openWorldHint": True,
     }
 )
-def get_todos(
-    calendar: Annotated[str, "Calendar name or path"],
+def find_todos(
+    calendar: Annotated[str, "Calendar name or path (searches all calendars if empty)"] = "",
+    after: Annotated[str, "Include todos with any date (due/created/completed) on or after this (ISO 8601)"] = "",
+    before: Annotated[str, "Include todos with any date (due/created/completed) on or before this (ISO 8601)"] = "",
+    query: Annotated[str, "Text to match against summary and description"] = "",
     include_completed: Annotated[bool, "Include completed todos"] = False,
+    limit: Annotated[int, "Max results (default 50, max 200)"] = 50,
 ) -> list[dict] | str:
-    """Get todos/tasks from a calendar."""
+    """Find todos by date range, text search, and/or status. Provide after+before for date filtering, query for text search, or both."""
     try:
-        cal = _resolve_calendar(calendar)
-        todos = cal.todos(include_completed=include_completed)
-        return [_todo_to_dict(t) for t in todos]
+        limit = min(max(limit, 1), 200)
+        principal = _get_principal()
+        calendars = (
+            [_resolve_calendar(calendar)] if calendar else principal.calendars()
+        )
+
+        after_dt = _parse_dt(after) if after else None
+        before_dt = _parse_dt(before) if before else None
+        has_date_filter = after_dt is not None or before_dt is not None
+        query_lower = query.lower() if query else ""
+
+        results = []
+
+        for cal in calendars:
+            if len(results) >= limit:
+                break
+            try:
+                todos = cal.todos(include_completed=include_completed)
+            except Exception:
+                continue
+
+            for todo in todos:
+                if len(results) >= limit:
+                    break
+                d = _todo_to_dict(todo)
+
+                # Text filter
+                if query_lower:
+                    summary = d.get("summary", "").lower()
+                    desc = d.get("description", "").lower()
+                    if query_lower not in summary and query_lower not in desc:
+                        continue
+
+                # Date filter: match if any date field falls in range
+                if has_date_filter:
+                    date_fields = []
+                    for key in ("due", "created", "completed"):
+                        raw = d.get(key)
+                        if raw:
+                            try:
+                                date_fields.append(_parse_dt(raw))
+                            except (ValueError, TypeError):
+                                pass
+                    if not date_fields:
+                        continue
+                    if not any(
+                        (after_dt is None or dt >= after_dt)
+                        and (before_dt is None or dt <= before_dt)
+                        for dt in date_fields
+                    ):
+                        continue
+
+                results.append(d)
+
+        return results
     except ValueError as e:
-        return format_error("get_todos", str(e))
+        return format_error("find_todos", str(e))
     except Exception as e:
-        return format_error("get_todos", str(e))
+        return format_error("find_todos", str(e))
 
 
 @caldav_server.tool(

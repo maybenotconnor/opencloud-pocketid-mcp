@@ -161,7 +161,7 @@ This also works with **Claude Code** -- it supports remote MCP servers with OAut
 | `caldav_update_event` | Partial update of an event by UID |
 | `caldav_delete_event` | Delete an event by UID |
 | `caldav_search_events` | Search events by text (max 30 results) |
-| `caldav_get_todos` | Get todos from a calendar |
+| `caldav_find_todos` | Find todos by date range, text, and/or status |
 | `caldav_create_todo` | Create a new todo/task |
 | `caldav_update_todo` | Update a todo by UID |
 | `caldav_complete_todo` | Mark a todo as completed with timestamp |

@@ -14,7 +14,7 @@ from src.caldav_server import (
     create_todo,
     delete_event,
     find_events,
-    get_todos,
+    find_todos,
     list_calendars,
     update_event,
     update_todo,
@@ -35,12 +35,16 @@ def _make_event_data(summary="Test Event", uid="test-uid-123", include_timestamp
     return cal.serialize()
 
 
-def _make_todo_data(summary="Test Todo", uid="todo-uid-123", include_timestamps=True):
+def _make_todo_data(summary="Test Todo", uid="todo-uid-123", include_timestamps=True, due=None, completed=None):
     cal = vobject.iCalendar()
     vtodo = cal.add("vtodo")
     vtodo.add("summary").value = summary
     vtodo.add("uid").value = uid
-    vtodo.add("status").value = "NEEDS-ACTION"
+    vtodo.add("status").value = "COMPLETED" if completed else "NEEDS-ACTION"
+    if due:
+        vtodo.add("due").value = due
+    if completed:
+        vtodo.add("completed").value = completed
     if include_timestamps:
         vtodo.add("created").value = datetime(2026, 3, 4, 9, 0, tzinfo=utc)
         vtodo.add("last-modified").value = datetime(2026, 3, 4, 10, 0, tzinfo=utc)
@@ -192,14 +196,14 @@ class TestDeleteEvent:
         mock_event.delete.assert_called_once()
 
 
-class TestGetTodos:
+class TestFindTodos:
     def test_returns_todos(self, mock_principal):
         _, calendar = mock_principal
         mock_todo = MagicMock()
         mock_todo.data = _make_todo_data()
         calendar.todos.return_value = [mock_todo]
 
-        result = get_todos("Personal")
+        result = find_todos(calendar="Personal")
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["summary"] == "Test Todo"
@@ -210,11 +214,90 @@ class TestGetTodos:
         mock_todo.data = _make_todo_data()
         calendar.todos.return_value = [mock_todo]
 
-        result = get_todos("Personal")
+        result = find_todos(calendar="Personal")
         assert result[0]["created"] is not None
         assert result[0]["last_modified"] is not None
         assert result[0]["dtstamp"] is not None
         assert result[0]["completed"] is None
+
+    def test_searches_all_calendars_when_empty(self, mock_principal):
+        principal, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data()
+        calendar.todos.return_value = [mock_todo]
+
+        result = find_todos()
+        assert isinstance(result, list)
+        assert len(result) == 1
+        principal.calendars.assert_called()
+
+    def test_filters_by_query_text(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data(summary="Buy groceries")
+        calendar.todos.return_value = [mock_todo]
+
+        result = find_todos(calendar="Personal", query="groceries")
+        assert len(result) == 1
+        assert result[0]["summary"] == "Buy groceries"
+
+    def test_query_excludes_non_matches(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data(summary="Buy groceries")
+        calendar.todos.return_value = [mock_todo]
+
+        result = find_todos(calendar="Personal", query="laundry")
+        assert len(result) == 0
+
+    def test_filters_by_due_date_in_range(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data(due=datetime(2026, 3, 10, 12, 0, tzinfo=utc))
+        calendar.todos.return_value = [mock_todo]
+
+        result = find_todos(calendar="Personal", after="2026-03-09", before="2026-03-11")
+        assert len(result) == 1
+
+    def test_filters_by_due_date_out_of_range(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data(due=datetime(2026, 3, 10, 12, 0, tzinfo=utc))
+        calendar.todos.return_value = [mock_todo]
+
+        result = find_todos(calendar="Personal", after="2026-03-15", before="2026-03-20")
+        assert len(result) == 0
+
+    def test_matches_by_created_when_no_due(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        # include_timestamps=True sets created to 2026-03-04T09:00Z, no due
+        mock_todo.data = _make_todo_data()
+        calendar.todos.return_value = [mock_todo]
+
+        result = find_todos(calendar="Personal", after="2026-03-01", before="2026-03-05")
+        assert len(result) == 1
+
+    def test_excludes_todo_with_no_dates_when_date_filter_active(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data(include_timestamps=False)
+        calendar.todos.return_value = [mock_todo]
+
+        result = find_todos(calendar="Personal", after="2026-03-01", before="2026-03-31")
+        assert len(result) == 0
+
+    def test_respects_limit(self, mock_principal):
+        _, calendar = mock_principal
+        todos = []
+        for i in range(5):
+            t = MagicMock()
+            t.data = _make_todo_data(summary=f"Todo {i}", uid=f"uid-{i}")
+            todos.append(t)
+        calendar.todos.return_value = todos
+
+        result = find_todos(calendar="Personal", limit=3)
+        assert len(result) == 3
 
 
 class TestCreateTodo:

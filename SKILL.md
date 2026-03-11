@@ -10,7 +10,7 @@ OpenCloud MCP provides 25 tools across three services: **WebDAV** (files), **Cal
 
 ## Discovery Tools — the `find_*` and `search_*` pattern
 
-Three flexible discovery tools share a consistent design: all parameters are optional, combine any filters you need. Additionally, `search_files` provides fast server-side indexed search with full-text content support.
+Four flexible discovery tools share a consistent design: all parameters are optional, combine any filters you need. Additionally, `search_files` provides fast server-side indexed search with full-text content support.
 
 ### webdav_find_files
 Find files and directories with optional filters. All params optional.
@@ -52,6 +52,19 @@ Find calendar events by date range and/or text search. Use `start`+`end` for dat
 | Search within date range | `find_events(calendar="Work", start="2026-03-01", end="2026-03-31", query="review")` |
 | All events across calendars | `find_events(start="2026-03-01", end="2026-04-01")` |
 
+### caldav_find_todos
+Find todos by date range, text search, and/or status. All params optional.
+
+| Use case | Parameters |
+|---|---|
+| All todos from a calendar | `find_todos(calendar="Personal")` |
+| Include completed | `find_todos(calendar="Personal", include_completed=True)` |
+| Search by text | `find_todos(query="groceries")` |
+| Todos due this week | `find_todos(after="2026-03-03", before="2026-03-09")` |
+| Overdue todos | `find_todos(before="2026-03-10")` |
+| Combine: text + date range | `find_todos(calendar="Work", query="report", after="2026-03-01", before="2026-03-31")` |
+| All todos across calendars | `find_todos()` |
+
 ### carddav_find_contacts
 Find contacts with optional text search. Omit `query` to list all, provide it to search.
 
@@ -81,7 +94,7 @@ Find contacts with optional text search. Omit `query` to list all, provide it to
 
 ## Todo Operations
 
-- **Get todos**: `caldav_get_todos(calendar="Personal")` — add `include_completed=True` for all
+- **Find todos**: `caldav_find_todos(calendar="Personal")` — add `include_completed=True` for all, supports date/text filters
 - **Create todo**: `caldav_create_todo(calendar="Personal", summary="Buy groceries")`
 - **Update todo**: `caldav_update_todo(calendar="Personal", uid="...", updates={"summary": "Updated"})`
 - **Complete todo**: `caldav_complete_todo(calendar="Personal", uid="...")`
