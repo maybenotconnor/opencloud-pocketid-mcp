@@ -1,6 +1,7 @@
 """WebDAV tools for OpenCloud file management. 10 tools."""
 
 import base64
+import os
 import posixpath
 import re
 import tempfile
@@ -333,25 +334,28 @@ def edit_file(
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
             tmp_path = tmp.name
 
-        client.download_file(path, tmp_path)
-        with open(tmp_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        try:
+            client.download_file(path, tmp_path)
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                content = f.read()
 
-        count = content.count(old_string)
-        if count == 0:
-            return format_error("edit_file", "old_string not found in file")
-        if count > 1:
-            return format_error(
-                "edit_file",
-                f"old_string found {count} times — provide more context to make it unique",
-            )
+            count = content.count(old_string)
+            if count == 0:
+                return format_error("edit_file", "old_string not found in file")
+            if count > 1:
+                return format_error(
+                    "edit_file",
+                    f"old_string found {count} times — provide more context to make it unique",
+                )
 
-        new_content = content.replace(old_string, new_string, 1)
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        client.upload_file(tmp_path, path, overwrite=True)
+            new_content = content.replace(old_string, new_string, 1)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            client.upload_file(tmp_path, path, overwrite=True)
 
-        return f"Edited {path}"
+            return f"Edited {path}"
+        finally:
+            os.unlink(tmp_path)
     except ValueError as e:
         return format_error("edit_file", str(e))
     except UnicodeDecodeError:
