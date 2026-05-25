@@ -126,11 +126,12 @@ class TestGetContact:
 
 class TestCreateContact:
     def test_creates_contact(self, mock_principal):
-        _, book = mock_principal
-        result = create_contact("Contacts", "Jane Smith", email="jane@example.com")
+        mock_obj = MagicMock()
+        with patch("caldav.CalendarObjectResource", return_value=mock_obj):
+            result = create_contact("Contacts", "Jane Smith", email="jane@example.com")
         assert isinstance(result, dict)
         assert "uid" in result
-        book.save_event.assert_called_once()
+        mock_obj.save.assert_called_once()
 
 
 class TestUpdateContact:

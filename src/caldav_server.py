@@ -66,10 +66,11 @@ def _resolve_calendar(name: str) -> caldav.Calendar:
     for cal in calendars:
         if cal.get_display_name() and cal.get_display_name().lower() == name.lower():
             return cal
-    # Try path match
+    # Try path match — check last URL segment or exact URL, not substring
     for cal in calendars:
-        cal_url = str(cal.url)
-        if name in cal_url or name.rstrip("/") == cal_url.rstrip("/"):
+        cal_url = str(cal.url).rstrip("/")
+        cal_basename = cal_url.rsplit("/", 1)[-1] if "/" in cal_url else cal_url
+        if cal_basename.lower() == name.lower() or name.rstrip("/") == cal_url:
             return cal
     available = ", ".join(c.get_display_name() or str(c.url) for c in calendars)
     raise ValueError(f"Calendar '{name}' not found. Available: {available}")
@@ -234,6 +235,7 @@ def create_event(
 
         now = datetime.now(tz=utc)
         vevent.add("created").value = now
+        vevent.add("last-modified").value = now
         vevent.add("dtstamp").value = now
 
         event = cal.save_event(vcal.serialize())
@@ -265,11 +267,20 @@ def update_event(
         vevent = vcal.vevent
 
         if "summary" in updates:
-            vevent.summary.value = updates["summary"]
+            if hasattr(vevent, "summary"):
+                vevent.summary.value = updates["summary"]
+            else:
+                vevent.add("summary").value = updates["summary"]
         if "start" in updates:
-            vevent.dtstart.value = _parse_dt(updates["start"])
+            if hasattr(vevent, "dtstart"):
+                vevent.dtstart.value = _parse_dt(updates["start"])
+            else:
+                vevent.add("dtstart").value = _parse_dt(updates["start"])
         if "end" in updates:
-            vevent.dtend.value = _parse_dt(updates["end"])
+            if hasattr(vevent, "dtend"):
+                vevent.dtend.value = _parse_dt(updates["end"])
+            else:
+                vevent.add("dtend").value = _parse_dt(updates["end"])
         if "location" in updates:
             if hasattr(vevent, "location"):
                 vevent.location.value = updates["location"]
@@ -467,7 +478,10 @@ def update_todo(
         vtodo = vcal.vtodo
 
         if "summary" in updates:
-            vtodo.summary.value = updates["summary"]
+            if hasattr(vtodo, "summary"):
+                vtodo.summary.value = updates["summary"]
+            else:
+                vtodo.add("summary").value = updates["summary"]
         if "due" in updates:
             if hasattr(vtodo, "due"):
                 vtodo.due.value = _parse_dt(updates["due"])

@@ -499,22 +499,38 @@ def _build_kql(
     modified_after: str,
     modified_before: str,
 ) -> str:
-    """Build a KQL query string from structured parameters."""
+    """Build a KQL query string from structured parameters.
+
+    Each value is stripped of KQL operator characters before embedding
+    to prevent injection of unintended query clauses.
+    """
     parts: list[str] = []
     if content:
-        terms = content.split()
+        # Keep word chars, hyphens, apostrophes; strip KQL operators
+        terms = [re.sub(r"[^\w\-']", "", t) for t in content.split()]
+        terms = [t for t in terms if t]
         if len(terms) == 1:
             parts.append(f"content:{terms[0]}")
-        else:
+        elif terms:
             parts.append(" AND ".join(f"content:{t}" for t in terms))
     if name:
-        parts.append(f"name:{name}")
+        # Allow glob chars (* ?) and common filename characters
+        safe = re.sub(r"[^\w.*?\-/ ]", "", name)
+        if safe:
+            parts.append(f"name:{safe}")
     if mediatype:
-        parts.append(f"mediatype:{mediatype}")
+        safe = re.sub(r"\W", "", mediatype)
+        if safe:
+            parts.append(f"mediatype:{safe}")
     if modified_after:
-        parts.append(f"mtime>={modified_after}")
+        # ISO 8601 dates only contain digits, dashes, T, colon, Z, +
+        safe = re.sub(r"[^\d\-T:Z+]", "", modified_after)
+        if safe:
+            parts.append(f"mtime>={safe}")
     if modified_before:
-        parts.append(f"mtime<={modified_before}")
+        safe = re.sub(r"[^\d\-T:Z+]", "", modified_before)
+        if safe:
+            parts.append(f"mtime<={safe}")
     return " ".join(parts)
 
 

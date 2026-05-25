@@ -171,6 +171,7 @@ class TestCreateEvent:
 
         ical_data = calendar.save_event.call_args[0][0]
         assert "CREATED:" in ical_data
+        assert "LAST-MODIFIED:" in ical_data
         assert "DTSTAMP:" in ical_data
 
 
