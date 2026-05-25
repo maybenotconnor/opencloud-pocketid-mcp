@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from fastmcp import FastMCP
 
 from src.config import settings
-from src.utils import format_error
+from src.utils import format_error, matches_terms
 
 caldav_server = FastMCP(name="CalDAV")
 
@@ -181,15 +181,13 @@ def find_events(
             except Exception:
                 continue
 
-            query_lower = query.lower() if query else ""
             for event in events:
                 if len(results) >= limit:
                     break
                 d = _event_to_dict(event)
-                if query_lower:
-                    summary = d.get("summary", "").lower()
-                    desc = d.get("description", "").lower()
-                    if query_lower not in summary and query_lower not in desc:
+                if query:
+                    text = d.get("summary", "") + " " + d.get("description", "")
+                    if not matches_terms(text, query):
                         continue
                 results.append(d)
 
@@ -352,7 +350,6 @@ def find_todos(
         after_dt = _parse_dt(after) if after else None
         before_dt = _parse_dt(before) if before else None
         has_date_filter = after_dt is not None or before_dt is not None
-        query_lower = query.lower() if query else ""
 
         results = []
 
@@ -370,10 +367,9 @@ def find_todos(
                 d = _todo_to_dict(todo)
 
                 # Text filter
-                if query_lower:
-                    summary = d.get("summary", "").lower()
-                    desc = d.get("description", "").lower()
-                    if query_lower not in summary and query_lower not in desc:
+                if query:
+                    text = d.get("summary", "") + " " + d.get("description", "")
+                    if not matches_terms(text, query):
                         continue
 
                 # Date filter: match if any date field falls in range

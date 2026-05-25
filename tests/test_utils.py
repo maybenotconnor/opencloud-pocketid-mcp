@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.utils import format_error, matches_query, sanitize_path
+from src.utils import format_error, matches_query, matches_terms, sanitize_path
 
 
 class TestSanitizePath:
@@ -54,6 +54,36 @@ class TestMatchesQuery:
 
     def test_glob_no_match(self):
         assert not matches_query("report.pdf", "*.txt")
+
+    def test_multi_word_and_all_match(self):
+        assert matches_query("Q4 quarterly report.pdf", "quarterly report")
+
+    def test_multi_word_and_partial_no_match(self):
+        assert not matches_query("quarterly summary.pdf", "quarterly report")
+
+    def test_multi_word_case_insensitive(self):
+        assert matches_query("Q4 Financial Report.pdf", "financial report")
+
+
+class TestMatchesTerms:
+    def test_single_term_match(self):
+        assert matches_terms("Board meeting notes", "meeting")
+
+    def test_single_term_no_match(self):
+        assert not matches_terms("Board meeting notes", "budget")
+
+    def test_multi_term_all_present(self):
+        assert matches_terms("Board meeting notes from Q4", "board meeting")
+
+    def test_multi_term_partial_no_match(self):
+        assert not matches_terms("Board meeting notes", "board budget")
+
+    def test_case_insensitive(self):
+        assert matches_terms("BOARD Meeting Notes", "board meeting")
+
+    def test_three_terms_all_required(self):
+        assert matches_terms("Q4 budget review meeting", "q4 budget meeting")
+        assert not matches_terms("Q4 budget notes", "q4 budget meeting")
 
 
 class TestFormatError:

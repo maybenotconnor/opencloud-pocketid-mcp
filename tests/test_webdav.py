@@ -3,19 +3,22 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from mcp.types import ImageContent
 
 from src.webdav_server import (
     _build_kql,
+    _glob_base,
+    _glob_match,
     _parse_search_response,
     copy,
     delete,
-    find_files,
+    edit_file,
     get_file_info,
+    glob,
+    grep,
     mkdir,
     move,
-    read_binary,
     read_file,
-    search_files,
     write_file,
 )
 
@@ -28,14 +31,14 @@ def mock_client():
         yield client
 
 
-class TestFindFiles:
+class TestGlob:
     def test_lists_single_directory(self, mock_client):
         mock_client.ls.return_value = [
             {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
             {"name": "/file.txt", "type": "file", "content_length": 100, "modified": "2026-01-01"},
             {"name": "/subdir", "type": "directory", "content_length": 0, "modified": "2026-01-02"},
         ]
-        result = find_files("/", depth=1)
+        result = glob("**/*", depth=1)
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["name"] == "file.txt"
@@ -43,16 +46,16 @@ class TestFindFiles:
         assert result[1]["type"] == "directory"
 
     def test_rejects_path_traversal(self):
-        result = find_files("/../etc")
+        result = glob("/../etc/**/*")
         assert "Error" in result
 
-    def test_filters_by_query(self, mock_client):
+    def test_filters_by_extension(self, mock_client):
         mock_client.ls.return_value = [
             {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
             {"name": "/readme.md", "type": "file", "content_length": 50, "modified": "2026-01-01"},
             {"name": "/photo.jpg", "type": "file", "content_length": 200, "modified": "2026-01-02"},
         ]
-        result = find_files("/", query="*.md", depth=1)
+        result = glob("*.md", depth=1)
         assert len(result) == 1
         assert result[0]["name"] == "readme.md"
 
@@ -62,7 +65,7 @@ class TestFindFiles:
             {"name": "/file.txt", "type": "file", "content_length": 100, "modified": "2026-01-01"},
             {"name": "/subdir", "type": "directory", "content_length": 0, "modified": "2026-01-02"},
         ]
-        result = find_files("/", file_type="directory", depth=1)
+        result = glob("**/*", file_type="directory", depth=1)
         assert len(result) == 1
         assert result[0]["type"] == "directory"
 
@@ -72,7 +75,7 @@ class TestFindFiles:
             {"name": "/old.txt", "type": "file", "content_length": 50, "modified": "2026-01-01T00:00:00+00:00"},
             {"name": "/new.txt", "type": "file", "content_length": 50, "modified": "2026-03-05T12:00:00+00:00"},
         ]
-        result = find_files("/", modified_after="2026-03-01", depth=1)
+        result = glob("**/*", modified_after="2026-03-01", depth=1)
         assert len(result) == 1
         assert result[0]["name"] == "new.txt"
 
@@ -81,28 +84,128 @@ class TestFindFiles:
         for i in range(20):
             items.append({"name": f"/file{i}.txt", "type": "file", "content_length": 10, "modified": "2026-01-01"})
         mock_client.ls.return_value = items
-        result = find_files("/", depth=1, limit=5)
-        # 5 results + 1 truncation note
+        result = glob("**/*", depth=1, limit=5)
         assert len(result) == 6
         assert result[-1].get("note") is not None
 
+    def test_path_pattern_uses_base_dir(self, mock_client):
+        mock_client.ls.return_value = []
+        glob("/Documents/**/*.pdf")
+        mock_client.ls.assert_called_with("/Documents", detail=True)
+
+
+class TestGlobHelpers:
+    def test_glob_base_absolute_with_wildcard(self):
+        assert _glob_base("/Documents/**/*.pdf") == "/Documents"
+
+    def test_glob_base_relative(self):
+        assert _glob_base("**/*.pdf") == "/"
+
+    def test_glob_base_no_wildcard(self):
+        assert _glob_base("/Documents/report.pdf") == "/Documents"
+
+    def test_glob_base_root_wildcard(self):
+        assert _glob_base("*.txt") == "/"
+
+    def test_glob_match_double_star(self):
+        assert _glob_match("/Documents/Projects/report.pdf", "/Documents/**/*.pdf")
+
+    def test_glob_match_single_star(self):
+        assert _glob_match("/Documents/report.pdf", "/Documents/*.pdf")
+        assert not _glob_match("/Documents/sub/report.pdf", "/Documents/*.pdf")
+
+    def test_glob_match_no_slash_basename(self):
+        assert _glob_match("/Documents/report.pdf", "*.pdf")
+        assert _glob_match("/any/depth/report.pdf", "*.pdf")
+
+    def test_glob_match_question_mark(self):
+        assert _glob_match("/file1.txt", "file?.txt")
+        assert not _glob_match("/file10.txt", "file?.txt")
+
+    def test_glob_match_case_insensitive(self):
+        assert _glob_match("/Documents/Report.PDF", "/Documents/*.pdf")
+
 
 class TestReadFile:
-    def test_rejects_large_files(self, mock_client):
-        mock_client.info.return_value = {"content_length": 2_000_000}
-        result = read_file("/large.bin")
+    def test_rejects_large_text_files(self, mock_client):
+        mock_client.info.return_value = {"content_length": 2_000_000, "content_type": "text/plain"}
+        result = read_file("/large.txt")
         assert "1MB limit" in result
+
+    def test_rejects_large_binary_files(self, mock_client):
+        mock_client.info.return_value = {"content_length": 10_000_000, "content_type": "application/octet-stream"}
+        result = read_file("/huge.bin", binary=True)
+        assert "5MB limit" in result
 
     def test_rejects_path_traversal(self):
         result = read_file("/../etc/passwd")
         assert "Error" in result
 
+    def test_image_returns_image_content(self, mock_client):
+        mock_client.info.return_value = {"content_length": 1024, "content_type": "image/jpeg"}
+        with patch("src.webdav_server.tempfile.NamedTemporaryFile") as mock_tmp, \
+             patch("builtins.open", create=True) as mock_open:
+            mock_tmp.return_value.__enter__ = lambda s: s
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            mock_tmp.return_value.name = "/tmp/fake"
+            mock_open.return_value.__enter__ = lambda s: s
+            mock_open.return_value.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value.read.return_value = b"\xff\xd8\xff"
+            result = read_file("/photo.jpg")
+        assert isinstance(result, ImageContent)
+        assert result.mimeType == "image/jpeg"
 
-class TestReadBinary:
+    def test_binary_flag_returns_string(self, mock_client):
+        mock_client.info.return_value = {"content_length": 100, "content_type": "application/zip"}
+        with patch("src.webdav_server.tempfile.NamedTemporaryFile") as mock_tmp, \
+             patch("builtins.open", create=True) as mock_open:
+            mock_tmp.return_value.__enter__ = lambda s: s
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            mock_tmp.return_value.name = "/tmp/fake"
+            mock_open.return_value.__enter__ = lambda s: s
+            mock_open.return_value.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value.read.return_value = b"\x00\x01\x02"
+            result = read_file("/archive.zip", binary=True)
+        assert isinstance(result, str)
+
+
+class TestEditFile:
+    def _make_download(self, content: str):
+        """Return a side_effect for download_file that writes content to the given path."""
+        def _write(src, dst):
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write(content)
+        return _write
+
+    def test_success(self, mock_client):
+        mock_client.info.return_value = {"content_length": 100}
+        mock_client.download_file.side_effect = self._make_download(
+            "Hello world\nThis is a test file."
+        )
+        result = edit_file("/notes.txt", "Hello world", "Hello OpenCloud")
+        assert "Edited" in result
+        mock_client.upload_file.assert_called_once()
+
+    def test_not_found(self, mock_client):
+        mock_client.info.return_value = {"content_length": 100}
+        mock_client.download_file.side_effect = self._make_download("Hello world")
+        result = edit_file("/notes.txt", "missing string", "replacement")
+        assert "not found" in result
+
+    def test_multiple_matches(self, mock_client):
+        mock_client.info.return_value = {"content_length": 100}
+        mock_client.download_file.side_effect = self._make_download("foo bar foo")
+        result = edit_file("/notes.txt", "foo", "baz")
+        assert "2" in result
+
     def test_rejects_large_files(self, mock_client):
-        mock_client.info.return_value = {"content_length": 10_000_000}
-        result = read_binary("/huge.bin")
-        assert "5MB limit" in result
+        mock_client.info.return_value = {"content_length": 2_000_000}
+        result = edit_file("/large.txt", "foo", "bar")
+        assert "1MB limit" in result
+
+    def test_rejects_path_traversal(self):
+        result = edit_file("/../etc/passwd", "foo", "bar")
+        assert "Error" in result
 
 
 class TestWriteFile:
@@ -220,10 +323,9 @@ _SAMPLE_DIR_207 = """\
 </d:multistatus>"""
 
 
-class TestSearchFiles:
+class TestGrep:
     @pytest.fixture(autouse=True)
     def mock_httpx(self):
-        """Mock httpx.request for search tests (search uses httpx directly, not webdav4)."""
         with patch("src.webdav_server.httpx.request") as mock_req:
             self.mock_request = mock_req
             yield mock_req
@@ -236,42 +338,58 @@ class TestSearchFiles:
 
     def test_content_search(self):
         self._mock_207()
-        result = search_files(content="budget")
+        result = grep(content="budget")
         assert isinstance(result, list)
         assert len(result) == 2
-        # Should be sorted by score descending
         assert result[0]["name"] == "report.pdf"
         assert result[0]["score"] == 0.85
         assert result[1]["name"] == "2026.xlsx"
-        # Verify KQL built correctly
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "content:budget" in body
 
+    def test_multi_word_content_uses_and(self):
+        self._mock_207()
+        grep(content="quarterly budget")
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        assert "content:quarterly AND content:budget" in body
+
     def test_name_search(self):
         self._mock_207()
-        result = search_files(name="*.pdf")
-        assert isinstance(result, list)
-        call_kwargs = self.mock_request.call_args
-        body = call_kwargs.kwargs.get("content", "")
+        grep(name="*.pdf")
+        body = self.mock_request.call_args.kwargs.get("content", "")
         assert "name:*.pdf" in body
+
+    def test_modified_after(self):
+        self._mock_207()
+        grep(content="report", modified_after="2026-01-01")
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        # >= is XML-escaped to &gt;= in the body
+        assert "mtime&gt;=2026-01-01" in body
+
+    def test_modified_before(self):
+        self._mock_207()
+        grep(content="report", modified_before="2026-12-31")
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        # <= is XML-escaped to &lt;= in the body
+        assert "mtime&lt;=2026-12-31" in body
 
     def test_combined_params(self):
         self._mock_207()
-        search_files(content="report", mediatype="pdf", mtime="today")
+        grep(content="report", mediatype="pdf", modified_after="2026-01-01", modified_before="2026-06-30")
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "content:report" in body
         assert "mediatype:pdf" in body
-        assert "mtime:today" in body
+        assert "mtime&gt;=2026-01-01" in body
+        assert "mtime&lt;=2026-06-30" in body
 
     def test_cleans_space_href(self):
         self._mock_207()
-        result = search_files(content="budget")
-        # Path should have spaces prefix stripped
+        result = grep(content="budget")
         assert result[0]["path"] == "/Documents/report.pdf"
         assert result[1]["path"] == "/Budget/2026.xlsx"
 
     def test_empty_params_returns_error(self):
-        result = search_files()
+        result = grep()
         assert isinstance(result, str)
         assert "Error" in result
         assert "At least one" in result
@@ -280,8 +398,7 @@ class TestSearchFiles:
         resp = MagicMock()
         resp.status_code = 500
         self.mock_request.return_value = resp
-        result = search_files(content="test")
-        assert isinstance(result, str)
+        result = grep(content="test")
         assert "Error" in result
         assert "500" in result
 
@@ -289,52 +406,61 @@ class TestSearchFiles:
         resp = MagicMock()
         resp.status_code = 401
         self.mock_request.return_value = resp
-        result = search_files(content="test")
-        assert isinstance(result, str)
+        result = grep(content="test")
         assert "Authentication" in result
 
     def test_handles_501(self):
         resp = MagicMock()
         resp.status_code = 501
         self.mock_request.return_value = resp
-        result = search_files(content="test")
-        assert isinstance(result, str)
+        result = grep(content="test")
         assert "not available" in result
 
     def test_parses_directories(self):
         self._mock_207(xml=_SAMPLE_DIR_207)
-        result = search_files(name="Projects")
+        result = grep(name="Projects")
         assert len(result) == 1
         assert result[0]["type"] == "directory"
-        assert result[0]["size"] == 0
 
     def test_respects_limit(self):
         self._mock_207()
-        search_files(content="budget", limit=300)
+        grep(content="budget", limit=300)
         body = self.mock_request.call_args.kwargs.get("content", "")
-        # Should be clamped to 200
         assert "<oc:limit>200</oc:limit>" in body
 
     def test_respects_limit_minimum(self):
         self._mock_207()
-        search_files(content="budget", limit=0)
+        grep(content="budget", limit=0)
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "<oc:limit>1</oc:limit>" in body
 
 
 class TestBuildKql:
     def test_single_content(self):
-        assert _build_kql("budget", "", "", "") == "content:budget"
+        assert _build_kql("budget", "", "", "", "") == "content:budget"
+
+    def test_multi_word_content_and(self):
+        assert _build_kql("quarterly budget", "", "", "", "") == "content:quarterly AND content:budget"
+
+    def test_three_word_content_and(self):
+        result = _build_kql("q4 financial report", "", "", "", "")
+        assert result == "content:q4 AND content:financial AND content:report"
 
     def test_single_name(self):
-        assert _build_kql("", "*.pdf", "", "") == "name:*.pdf"
+        assert _build_kql("", "*.pdf", "", "", "") == "name:*.pdf"
+
+    def test_modified_after(self):
+        assert _build_kql("", "", "", "2026-01-01", "") == "mtime>=2026-01-01"
+
+    def test_modified_before(self):
+        assert _build_kql("", "", "", "", "2026-12-31") == "mtime<=2026-12-31"
 
     def test_combined(self):
-        result = _build_kql("report", "*.pdf", "document", "today")
-        assert result == "content:report name:*.pdf mediatype:document mtime:today"
+        result = _build_kql("report", "*.pdf", "document", "2026-01-01", "2026-12-31")
+        assert result == "content:report name:*.pdf mediatype:document mtime>=2026-01-01 mtime<=2026-12-31"
 
     def test_empty(self):
-        assert _build_kql("", "", "", "") == ""
+        assert _build_kql("", "", "", "", "") == ""
 
 
 class TestParseSearchResponse:
@@ -354,5 +480,3 @@ class TestParseSearchResponse:
     def test_empty_response(self):
         results = _parse_search_response('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>')
         assert results == []
-
-

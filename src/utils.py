@@ -27,8 +27,9 @@ def format_error(operation: str, detail: str) -> str:
 def matches_query(name: str, query: str) -> bool:
     """Check if a filename matches a search query.
 
-    Supports case-insensitive substring matching.
+    Supports case-insensitive substring or glob matching.
     If query contains * or ?, uses glob-style matching.
+    If query contains spaces (and no glob chars), all terms must match (AND).
     """
     name_lower = name.lower()
     query_lower = query.lower()
@@ -37,4 +38,10 @@ def matches_query(name: str, query: str) -> bool:
         pattern = re.escape(query_lower).replace(r"\*", ".*").replace(r"\?", ".")
         return bool(re.fullmatch(pattern, name_lower))
 
-    return query_lower in name_lower
+    return all(term in name_lower for term in query_lower.split())
+
+
+def matches_terms(text: str, query: str) -> bool:
+    """Check if text contains all query terms (AND logic, case-insensitive)."""
+    text_lower = text.lower()
+    return all(term in text_lower for term in query.lower().split())

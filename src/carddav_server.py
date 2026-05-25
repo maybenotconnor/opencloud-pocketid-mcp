@@ -11,7 +11,7 @@ import vobject
 from fastmcp import FastMCP
 
 from src.config import settings
-from src.utils import format_error
+from src.utils import format_error, matches_terms
 
 carddav_server = FastMCP(name="CardDAV")
 
@@ -235,7 +235,6 @@ def find_contacts(
             books = [book for _, _, book in _list_addressbooks()]
 
         results = []
-        query_lower = query.lower() if query else ""
 
         for book in books:
             if len(results) >= limit:
@@ -248,11 +247,11 @@ def find_contacts(
                 if len(results) >= limit:
                     break
                 summary = _vcard_to_summary(data)
-                if query_lower:
+                if query:
                     searchable = " ".join(
                         str(v) for v in summary.values() if isinstance(v, str)
-                    ).lower()
-                    if query_lower not in searchable:
+                    )
+                    if not matches_terms(searchable, query):
                         continue
                 results.append(summary)
 

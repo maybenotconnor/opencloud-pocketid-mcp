@@ -109,6 +109,18 @@ class TestFindEvents:
         result = find_events(query="lunch")
         assert len(result) == 0
 
+    def test_multi_word_query_requires_all_terms(self, mock_principal):
+        _, calendar = mock_principal
+        match_event = MagicMock()
+        match_event.data = _make_event_data(summary="Board budget review")
+        no_match_event = MagicMock()
+        no_match_event.data = _make_event_data(summary="Board meeting", uid="uid-2")
+        calendar.events.return_value = [match_event, no_match_event]
+
+        result = find_events(query="board budget")
+        assert len(result) == 1
+        assert result[0]["summary"] == "Board budget review"
+
     def test_event_includes_timestamps(self, mock_principal):
         _, calendar = mock_principal
         mock_event = MagicMock()
@@ -249,6 +261,18 @@ class TestFindTodos:
 
         result = find_todos(calendar="Personal", query="laundry")
         assert len(result) == 0
+
+    def test_multi_word_query_requires_all_terms(self, mock_principal):
+        _, calendar = mock_principal
+        match_todo = MagicMock()
+        match_todo.data = _make_todo_data(summary="Review Q4 budget report")
+        no_match_todo = MagicMock()
+        no_match_todo.data = _make_todo_data(summary="Review budget", uid="uid-2")
+        calendar.todos.return_value = [match_todo, no_match_todo]
+
+        result = find_todos(calendar="Personal", query="q4 budget")
+        assert len(result) == 1
+        assert result[0]["summary"] == "Review Q4 budget report"
 
     def test_filters_by_due_date_in_range(self, mock_principal):
         _, calendar = mock_principal
