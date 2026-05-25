@@ -11,7 +11,7 @@ import vobject
 from fastmcp import FastMCP
 
 from src.config import settings
-from src.utils import format_error
+from src.utils import format_error, matches_terms
 
 carddav_server = FastMCP(name="CardDAV")
 
@@ -79,7 +79,9 @@ def _resolve_addressbook(name: str) -> caldav.Calendar:
         if display_name and display_name.lower() == name.lower():
             return book
     for display_name, url, book in books:
-        if name in url or name.rstrip("/") == url.rstrip("/"):
+        url_stripped = url.rstrip("/")
+        url_basename = url_stripped.rsplit("/", 1)[-1] if "/" in url_stripped else url_stripped
+        if url_basename.lower() == name.lower() or name.rstrip("/") == url_stripped:
             return book
 
     available = ", ".join(dn or url for dn, url, _ in books)
@@ -135,10 +137,17 @@ def _vcard_to_summary(vcard_data: str) -> dict:
             "name": str(card.fn.value) if hasattr(card, "fn") else "",
             "uid": str(card.uid.value) if hasattr(card, "uid") else "",
         }
-        if hasattr(card, "email"):
-            result["email"] = str(card.email.value)
-        if hasattr(card, "tel"):
-            result["phone"] = str(card.tel.value)
+        emails = [str(c.value) for c in card.getChildren() if c.name.upper() == "EMAIL"]
+        if emails:
+            result["email"] = emails[0]
+            if len(emails) > 1:
+                result["emails"] = emails
+
+        phones = [str(c.value) for c in card.getChildren() if c.name.upper() == "TEL"]
+        if phones:
+            result["phone"] = phones[0]
+            if len(phones) > 1:
+                result["phones"] = phones
         if hasattr(card, "org"):
             org_val = card.org.value
             result["org"] = org_val[0] if isinstance(org_val, list) else str(org_val)
@@ -235,24 +244,23 @@ def find_contacts(
             books = [book for _, _, book in _list_addressbooks()]
 
         results = []
-        query_lower = query.lower() if query else ""
 
         for book in books:
             if len(results) >= limit:
                 break
-            try:
-                vcards = _fetch_vcards(book)
-            except Exception:
-                continue
+            vcards = _fetch_vcards(book)
             for _, data in vcards:
                 if len(results) >= limit:
                     break
                 summary = _vcard_to_summary(data)
-                if query_lower:
-                    searchable = " ".join(
-                        str(v) for v in summary.values() if isinstance(v, str)
-                    ).lower()
-                    if query_lower not in searchable:
+                if query:
+                    parts: list[str] = []
+                    for v in summary.values():
+                        if isinstance(v, str):
+                            parts.append(v)
+                        elif isinstance(v, list):
+                            parts.extend(str(i) for i in v)
+                    if not matches_terms(" ".join(parts), query):
                         continue
                 results.append(summary)
 
@@ -333,7 +341,9 @@ def create_contact(
             card.add("note").value = notes
 
         vcard_str = card.serialize()
-        book.save_event(vcard_str)
+        contact_url = str(book.url).rstrip("/") + "/" + uid_val + ".vcf"
+        obj = caldav.CalendarObjectResource(client=_client, url=contact_url, data=vcard_str)
+        obj.save()
         return {"uid": uid_val}
     except ValueError as e:
         return format_error("create_contact", str(e))
@@ -382,12 +392,19 @@ def update_contact(
         card = vobject.readOne(_strip_photo(target_data))
 
         if "name" in updates:
-            card.fn.value = updates["name"]
-            parts = updates["name"].rsplit(" ", 1)
-            if len(parts) == 2:
-                card.n.value = vobject.vcard.Name(family=parts[1], given=parts[0])
+            if hasattr(card, "fn"):
+                card.fn.value = updates["name"]
             else:
-                card.n.value = vobject.vcard.Name(family=updates["name"], given="")
+                card.add("fn").value = updates["name"]
+            parts = updates["name"].rsplit(" ", 1)
+            n_val = vobject.vcard.Name(
+                family=parts[1] if len(parts) == 2 else updates["name"],
+                given=parts[0] if len(parts) == 2 else "",
+            )
+            if hasattr(card, "n"):
+                card.n.value = n_val
+            else:
+                card.add("n").value = n_val
 
         if "email" in updates:
             card.contents["email"] = []

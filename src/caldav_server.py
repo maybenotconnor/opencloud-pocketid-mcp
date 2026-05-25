@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from fastmcp import FastMCP
 
 from src.config import settings
-from src.utils import format_error
+from src.utils import format_error, matches_terms
 
 caldav_server = FastMCP(name="CalDAV")
 
@@ -66,10 +66,11 @@ def _resolve_calendar(name: str) -> caldav.Calendar:
     for cal in calendars:
         if cal.get_display_name() and cal.get_display_name().lower() == name.lower():
             return cal
-    # Try path match
+    # Try path match — check last URL segment or exact URL, not substring
     for cal in calendars:
-        cal_url = str(cal.url)
-        if name in cal_url or name.rstrip("/") == cal_url.rstrip("/"):
+        cal_url = str(cal.url).rstrip("/")
+        cal_basename = cal_url.rsplit("/", 1)[-1] if "/" in cal_url else cal_url
+        if cal_basename.lower() == name.lower() or name.rstrip("/") == cal_url:
             return cal
     available = ", ".join(c.get_display_name() or str(c.url) for c in calendars)
     raise ValueError(f"Calendar '{name}' not found. Available: {available}")
@@ -181,15 +182,13 @@ def find_events(
             except Exception:
                 continue
 
-            query_lower = query.lower() if query else ""
             for event in events:
                 if len(results) >= limit:
                     break
                 d = _event_to_dict(event)
-                if query_lower:
-                    summary = d.get("summary", "").lower()
-                    desc = d.get("description", "").lower()
-                    if query_lower not in summary and query_lower not in desc:
+                if query:
+                    text = d.get("summary", "") + " " + d.get("description", "")
+                    if not matches_terms(text, query):
                         continue
                 results.append(d)
 
@@ -236,6 +235,7 @@ def create_event(
 
         now = datetime.now(tz=utc)
         vevent.add("created").value = now
+        vevent.add("last-modified").value = now
         vevent.add("dtstamp").value = now
 
         event = cal.save_event(vcal.serialize())
@@ -267,11 +267,20 @@ def update_event(
         vevent = vcal.vevent
 
         if "summary" in updates:
-            vevent.summary.value = updates["summary"]
+            if hasattr(vevent, "summary"):
+                vevent.summary.value = updates["summary"]
+            else:
+                vevent.add("summary").value = updates["summary"]
         if "start" in updates:
-            vevent.dtstart.value = _parse_dt(updates["start"])
+            if hasattr(vevent, "dtstart"):
+                vevent.dtstart.value = _parse_dt(updates["start"])
+            else:
+                vevent.add("dtstart").value = _parse_dt(updates["start"])
         if "end" in updates:
-            vevent.dtend.value = _parse_dt(updates["end"])
+            if hasattr(vevent, "dtend"):
+                vevent.dtend.value = _parse_dt(updates["end"])
+            else:
+                vevent.add("dtend").value = _parse_dt(updates["end"])
         if "location" in updates:
             if hasattr(vevent, "location"):
                 vevent.location.value = updates["location"]
@@ -352,7 +361,6 @@ def find_todos(
         after_dt = _parse_dt(after) if after else None
         before_dt = _parse_dt(before) if before else None
         has_date_filter = after_dt is not None or before_dt is not None
-        query_lower = query.lower() if query else ""
 
         results = []
 
@@ -370,10 +378,9 @@ def find_todos(
                 d = _todo_to_dict(todo)
 
                 # Text filter
-                if query_lower:
-                    summary = d.get("summary", "").lower()
-                    desc = d.get("description", "").lower()
-                    if query_lower not in summary and query_lower not in desc:
+                if query:
+                    text = d.get("summary", "") + " " + d.get("description", "")
+                    if not matches_terms(text, query):
                         continue
 
                 # Date filter: match if any date field falls in range
@@ -471,7 +478,10 @@ def update_todo(
         vtodo = vcal.vtodo
 
         if "summary" in updates:
-            vtodo.summary.value = updates["summary"]
+            if hasattr(vtodo, "summary"):
+                vtodo.summary.value = updates["summary"]
+            else:
+                vtodo.add("summary").value = updates["summary"]
         if "due" in updates:
             if hasattr(vtodo, "due"):
                 vtodo.due.value = _parse_dt(updates["due"])

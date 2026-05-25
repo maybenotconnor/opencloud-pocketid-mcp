@@ -140,16 +140,16 @@ This also works with **Claude Code** -- it supports remote MCP servers with OAut
 
 | Tool | Description |
 |------|-------------|
-| `webdav_list_files` | List files and directories at a path |
-| `webdav_read_file` | Read a text file (max 1MB, rejects binary) |
-| `webdav_read_binary` | Read any file as base64 (max 5MB) |
-| `webdav_write_file` | Write text to a file (auto-creates parent dirs) |
+| `webdav_glob` | Find files by glob pattern (e.g. `/Documents/**/*.pdf`); supports `**` for any depth |
+| `webdav_grep` | Server-side indexed search with full-text content support (Tika); multi-word terms are AND'd |
+| `webdav_read_file` | Read a file: text (max 1MB), images (auto-detected, returned as image content), binary with `binary=True` (max 5MB) |
+| `webdav_edit_file` | Targeted text edit — replaces an exact string once; fails if not found or ambiguous |
+| `webdav_write_file` | Write text to a file (auto-creates parent dirs, overwrites) |
 | `webdav_mkdir` | Create a directory (idempotent) |
 | `webdav_delete` | Delete a file or directory |
 | `webdav_move` | Move or rename a file/directory |
 | `webdav_copy` | Copy a file or directory |
 | `webdav_get_file_info` | Get metadata (size, modified, etag, content type) |
-| `webdav_search_files` | Search filenames by substring or glob (max 50 results) |
 
 ### CalDAV -- Calendar and Todos (10 tools)
 

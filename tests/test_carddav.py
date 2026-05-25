@@ -93,6 +93,25 @@ class TestFindContacts:
         result = find_contacts(query="zzzzz")
         assert len(result) == 0
 
+    def test_multi_word_query_requires_all_terms(self, mock_principal):
+        vcards = [
+            ("/c/1.vcf", _make_vcard(name="John Doe", uid="uid-1", email="john@acme.com")),
+            ("/c/2.vcf", _make_vcard(name="Jane Smith", uid="uid-2", email="jane@acme.com")),
+        ]
+        with patch("src.carddav_server._fetch_vcards", return_value=vcards):
+            result = find_contacts(query="john acme")
+            assert len(result) == 1
+            assert result[0]["name"] == "John Doe"
+
+    def test_multi_word_no_match_when_partial(self, mock_principal):
+        vcards = [
+            ("/c/1.vcf", _make_vcard(name="John Doe", uid="uid-1", email="john@example.com")),
+        ]
+        # "john" is in the vcard but "xyz" is not — should return no results
+        with patch("src.carddav_server._fetch_vcards", return_value=vcards):
+            result = find_contacts(query="john xyz")
+            assert len(result) == 0
+
 
 class TestGetContact:
     def test_finds_by_uid(self, mock_principal, mock_vcards):
@@ -107,11 +126,12 @@ class TestGetContact:
 
 class TestCreateContact:
     def test_creates_contact(self, mock_principal):
-        _, book = mock_principal
-        result = create_contact("Contacts", "Jane Smith", email="jane@example.com")
+        mock_obj = MagicMock()
+        with patch("caldav.CalendarObjectResource", return_value=mock_obj):
+            result = create_contact("Contacts", "Jane Smith", email="jane@example.com")
         assert isinstance(result, dict)
         assert "uid" in result
-        book.save_event.assert_called_once()
+        mock_obj.save.assert_called_once()
 
 
 class TestUpdateContact:

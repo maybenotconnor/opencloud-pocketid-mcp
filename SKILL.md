@@ -6,41 +6,43 @@ Use this as connector instructions to teach Claude how to use the OpenCloud MCP 
 
 ## Overview
 
-OpenCloud MCP provides 25 tools across three services: **WebDAV** (files), **CalDAV** (calendars/todos), and **CardDAV** (contacts). All tools are prefixed by their service namespace: `webdav_`, `caldav_`, `carddav_`.
+OpenCloud MCP provides 27 tools across three services: **WebDAV** (files), **CalDAV** (calendars/todos), and **CardDAV** (contacts). All tools are prefixed by their service namespace: `webdav_`, `caldav_`, `carddav_`.
 
-## Discovery Tools — the `find_*` and `search_*` pattern
+## Discovery Tools
 
-Four flexible discovery tools share a consistent design: all parameters are optional, combine any filters you need. Additionally, `search_files` provides fast server-side indexed search with full-text content support.
+Four flexible discovery tools share a consistent design: all parameters are optional, combine any filters you need. Additionally, `grep` provides fast server-side indexed search with full-text content support.
 
-### webdav_find_files
-Find files and directories with optional filters. All params optional.
-
-| Use case | Parameters |
-|---|---|
-| List a single directory | `find_files(path="/Documents", depth=1)` |
-| Full recursive file tree | `find_files(path="/")` |
-| Find by name pattern | `find_files(query="*.pdf")` |
-| Find by glob | `find_files(query="report*")` |
-| Files modified recently | `find_files(modified_after="2026-03-04")` |
-| Only directories | `find_files(file_type="directory")` |
-| Combine: recent Python files | `find_files(path="/Projects", query="*.py", modified_after="2026-03-01")` |
-| Shallow listing with filter | `find_files(path="/Photos", query="*.jpg", depth=1)` |
-
-### webdav_search_files
-Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika). Faster than find_files for large file trees. At least one param required; all combine with AND logic.
+### webdav_glob
+Find files and directories by glob pattern. The pattern embeds both path and filename — use `**` for any depth.
 
 | Use case | Parameters |
 |---|---|
-| Content search | `search_files(content="quarterly report")` |
-| Find by name pattern | `search_files(name="*.pdf")` |
-| Find by media type | `search_files(mediatype="image")` |
-| Recent documents | `search_files(mediatype="document", mtime="last 7 days")` |
-| Combined filters | `search_files(content="budget", mediatype="spreadsheet")` |
-| Paginated results | `search_files(name="*.txt", limit=20, offset=40)` |
+| List a single directory | `glob(pattern="/Documents/*", depth=1)` |
+| Full recursive file tree | `glob(pattern="**/*")` |
+| PDFs in a subtree | `glob(pattern="/Documents/**/*.pdf")` |
+| Any report file | `glob(pattern="**/*report*")` |
+| Files modified recently | `glob(pattern="**/*", modified_after="2026-03-04")` |
+| Only directories | `glob(pattern="**/*", file_type="directory")` |
+| Recent Python files | `glob(pattern="/Projects/**/*.py", modified_after="2026-03-01")` |
+| Shallow listing | `glob(pattern="/Photos/*.jpg", depth=1)` |
 
-> **When to use `search_files` vs `find_files`:**
-> - `search_files` — fast server-side indexed search, supports content search inside files, best for large trees
-> - `find_files` — client-side recursive walk, supports exact date filters and depth control, works without search index
+### webdav_grep
+Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika). Faster than `glob` for large file trees. Multi-word `content` terms are AND'd automatically. At least one param required.
+
+| Use case | Parameters |
+|---|---|
+| Content search (single term) | `grep(content="report")` |
+| Content search (multi-word AND) | `grep(content="quarterly budget")` |
+| Find by name pattern | `grep(name="*.pdf")` |
+| Find by media type | `grep(mediatype="image")` |
+| Documents modified after date | `grep(mediatype="document", modified_after="2026-03-01")` |
+| Combined filters | `grep(content="budget", mediatype="spreadsheet")` |
+| Date range | `grep(content="report", modified_after="2026-01-01", modified_before="2026-12-31")` |
+| Paginated results | `grep(name="*.txt", limit=20, offset=40)` |
+
+> **When to use `grep` vs `glob`:**
+> - `grep` — fast server-side indexed search, supports content search inside files, best for large trees
+> - `glob` — client-side recursive walk, supports exact date filters and depth control, works without search index
 
 ### caldav_find_events
 Find calendar events by date range and/or text search. Use `start`+`end` for date filtering, `query` for text, or both.
@@ -76,8 +78,10 @@ Find contacts with optional text search. Omit `query` to list all, provide it to
 
 ## File Operations
 
-- **Read text**: `webdav_read_file(path="/file.txt")` — max 1MB, UTF-8 only
-- **Read binary**: `webdav_read_binary(path="/image.png")` — returns base64, max 5MB
+- **Read text**: `webdav_read_file(path="/file.txt")` — max 1MB, UTF-8 text
+- **Read image**: `webdav_read_file(path="/photo.png")` — images auto-detected, returned as image content
+- **Read binary**: `webdav_read_file(path="/archive.zip", binary=True)` — returns base64, max 5MB
+- **Edit text file**: `webdav_edit_file(path="/file.txt", old_string="...", new_string="...")` — exact-match replace; fails if not found or matches >1 time
 - **Write file**: `webdav_write_file(path="/file.txt", content="...")` — creates parent dirs, overwrites
 - **Create directory**: `webdav_mkdir(path="/new-folder")`
 - **Get metadata**: `webdav_get_file_info(path="/file.txt")` — size, modified date, content type
@@ -109,7 +113,7 @@ Find contacts with optional text search. Omit `query` to list all, provide it to
 
 ## Tips
 
-- Always use `find_*` tools for discovery before CRUD operations — get UIDs from results
+- Always use discovery tools (`glob`, `grep`, `find_events`, `find_todos`, `find_contacts`) before CRUD operations — get UIDs from results
 - Calendar and addressbook names are case-insensitive (e.g., "personal" matches "Personal")
 - Date parameters accept ISO 8601 format: `"2026-03-05"` or `"2026-03-05T14:00"`
 - The `updates` parameter on update tools is a dict — only include fields you want to change
