@@ -6,7 +6,7 @@ Use this as connector instructions to teach Claude how to use the OpenCloud MCP 
 
 ## Overview
 
-OpenCloud MCP provides 27 tools across three services: **WebDAV** (files), **CalDAV** (calendars/todos), and **CardDAV** (contacts). All tools are prefixed by their service namespace: `webdav_`, `caldav_`, `carddav_`.
+OpenCloud MCP provides 25 tools across three services: **WebDAV** (files), **CalDAV** (calendars/todos), and **CardDAV** (contacts). All tools are prefixed by their service namespace: `webdav_`, `caldav_`, `carddav_`.
 
 ## Discovery Tools
 
@@ -27,7 +27,7 @@ Find files and directories by glob pattern. The pattern embeds both path and fil
 | Shallow listing | `glob(pattern="/Photos/*.jpg", depth=1)` |
 
 ### webdav_grep
-Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika). Faster than `glob` for large file trees. Multi-word `content` terms are AND'd automatically. At least one param required.
+Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika). Faster than `glob` for large file trees. Multi-word `content` terms are AND'd automatically. At least one param required. Note: unlike the built-in Grep tool, `content` is plain keywords (not a regex) — use `name` for filename patterns.
 
 | Use case | Parameters |
 |---|---|
