@@ -281,7 +281,7 @@ class TestFindTodos:
         mock_todo.data = _make_todo_data(due=datetime(2026, 3, 10, 12, 0, tzinfo=utc))
         calendar.todos.return_value = [mock_todo]
 
-        result = find_todos(calendar="Personal", after="2026-03-09", before="2026-03-11")
+        result = find_todos(calendar="Personal", start="2026-03-09", end="2026-03-11")
         assert len(result) == 1
 
     def test_filters_by_due_date_out_of_range(self, mock_principal):
@@ -290,7 +290,7 @@ class TestFindTodos:
         mock_todo.data = _make_todo_data(due=datetime(2026, 3, 10, 12, 0, tzinfo=utc))
         calendar.todos.return_value = [mock_todo]
 
-        result = find_todos(calendar="Personal", after="2026-03-15", before="2026-03-20")
+        result = find_todos(calendar="Personal", start="2026-03-15", end="2026-03-20")
         assert len(result) == 0
 
     def test_matches_by_created_when_no_due(self, mock_principal):
@@ -300,7 +300,7 @@ class TestFindTodos:
         mock_todo.data = _make_todo_data()
         calendar.todos.return_value = [mock_todo]
 
-        result = find_todos(calendar="Personal", after="2026-03-01", before="2026-03-05")
+        result = find_todos(calendar="Personal", start="2026-03-01", end="2026-03-05")
         assert len(result) == 1
 
     def test_excludes_todo_with_no_dates_when_date_filter_active(self, mock_principal):
@@ -309,7 +309,7 @@ class TestFindTodos:
         mock_todo.data = _make_todo_data(include_timestamps=False)
         calendar.todos.return_value = [mock_todo]
 
-        result = find_todos(calendar="Personal", after="2026-03-01", before="2026-03-31")
+        result = find_todos(calendar="Personal", start="2026-03-01", end="2026-03-31")
         assert len(result) == 0
 
     def test_respects_limit(self, mock_principal):

@@ -344,13 +344,13 @@ def delete_event(
 )
 def find_todos(
     calendar: Annotated[str, "Calendar name or path (searches all calendars if empty)"] = "",
-    after: Annotated[str, "Include todos with any date (due/created/completed) on or after this (ISO 8601)"] = "",
-    before: Annotated[str, "Include todos with any date (due/created/completed) on or before this (ISO 8601)"] = "",
+    start: Annotated[str, "Include todos with any date (due/created/completed) on or after this (ISO 8601)"] = "",
+    end: Annotated[str, "Include todos with any date (due/created/completed) on or before this (ISO 8601)"] = "",
     query: Annotated[str, "Text to match against summary and description"] = "",
     include_completed: Annotated[bool, "Include completed todos"] = False,
     limit: Annotated[int, "Max results (default 50, max 200)"] = 50,
 ) -> list[dict] | str:
-    """Find todos by date range, text search, and/or status. Provide after+before for date filtering, query for text search, or both."""
+    """Find todos by date range, text search, and/or status. Provide start+end for date filtering, query for text search, or both."""
     try:
         limit = min(max(limit, 1), 200)
         principal = _get_principal()
@@ -358,9 +358,9 @@ def find_todos(
             [_resolve_calendar(calendar)] if calendar else principal.calendars()
         )
 
-        after_dt = _parse_dt(after) if after else None
-        before_dt = _parse_dt(before) if before else None
-        has_date_filter = after_dt is not None or before_dt is not None
+        start_dt = _parse_dt(start) if start else None
+        end_dt = _parse_dt(end) if end else None
+        has_date_filter = start_dt is not None or end_dt is not None
 
         results = []
 
@@ -396,8 +396,8 @@ def find_todos(
                     if not date_fields:
                         continue
                     if not any(
-                        (after_dt is None or dt >= after_dt)
-                        and (before_dt is None or dt <= before_dt)
+                        (start_dt is None or dt >= start_dt)
+                        and (end_dt is None or dt <= end_dt)
                         for dt in date_fields
                     ):
                         continue

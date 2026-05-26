@@ -55,16 +55,16 @@ Find calendar events by date range and/or text search. Use `start`+`end` for dat
 | All events across calendars | `find_events(start="2026-03-01", end="2026-04-01")` |
 
 ### caldav_find_todos
-Find todos by date range, text search, and/or status. All params optional.
+Find todos by date range, text search, and/or status. All params optional. Date range uses `start`/`end` (same as `find_events`).
 
 | Use case | Parameters |
 |---|---|
 | All todos from a calendar | `find_todos(calendar="Personal")` |
 | Include completed | `find_todos(calendar="Personal", include_completed=True)` |
 | Search by text | `find_todos(query="groceries")` |
-| Todos due this week | `find_todos(after="2026-03-03", before="2026-03-09")` |
-| Overdue todos | `find_todos(before="2026-03-10")` |
-| Combine: text + date range | `find_todos(calendar="Work", query="report", after="2026-03-01", before="2026-03-31")` |
+| Todos due this week | `find_todos(start="2026-03-03", end="2026-03-09")` |
+| Overdue todos | `find_todos(end="2026-03-10")` |
+| Combine: text + date range | `find_todos(calendar="Work", query="report", start="2026-03-01", end="2026-03-31")` |
 | All todos across calendars | `find_todos()` |
 
 ### carddav_find_contacts
@@ -81,7 +81,7 @@ Find contacts with optional text search. Omit `query` to list all, provide it to
 - **Read text**: `webdav_read_file(path="/file.txt")` — max 1MB, UTF-8 text
 - **Read image**: `webdav_read_file(path="/photo.png")` — images auto-detected, returned as image content
 - **Read binary**: `webdav_read_file(path="/archive.zip", binary=True)` — returns base64, max 5MB
-- **Edit text file**: `webdav_edit_file(path="/file.txt", old_string="...", new_string="...")` — exact-match replace; fails if not found or matches >1 time
+- **Edit text file**: `webdav_edit_file(path="/file.txt", old_str="...", new_str="...")` — exact-match replace; fails if not found or matches >1 time
 - **Write file**: `webdav_write_file(path="/file.txt", content="...")` — creates parent dirs, overwrites
 - **Create directory**: `webdav_mkdir(path="/new-folder")`
 - **Get metadata**: `webdav_get_file_info(path="/file.txt")` — size, modified date, content type
