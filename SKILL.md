@@ -27,18 +27,19 @@ Find files and directories by glob pattern. The pattern embeds both path and fil
 | Shallow listing | `glob(pattern="/Photos/*.jpg", depth=1)` |
 
 ### webdav_grep
-Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika). Faster than `glob` for large file trees. Multi-word `content` terms are AND'd automatically. At least one param required. Note: unlike the built-in Grep tool, `content` is plain keywords (not a regex) — use `name` for filename patterns.
+Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika). Faster than `glob` for large file trees. Multi-word `pattern` terms are AND'd automatically. At least one param required (`path` alone is not sufficient). Note: unlike the built-in Grep tool, `pattern` is plain keywords (not a regex) — use `glob` for filename patterns and `path` to scope results to a directory.
 
 | Use case | Parameters |
 |---|---|
-| Content search (single term) | `grep(content="report")` |
-| Content search (multi-word AND) | `grep(content="quarterly budget")` |
-| Find by name pattern | `grep(name="*.pdf")` |
+| Content search (single term) | `grep(pattern="report")` |
+| Content search (multi-word AND) | `grep(pattern="quarterly budget")` |
+| Find by name pattern | `grep(glob="*.pdf")` |
+| Scoped to a directory | `grep(pattern="budget", path="/Finance")` |
 | Find by media type | `grep(mediatype="image")` |
 | Documents modified after date | `grep(mediatype="document", modified_after="2026-03-01")` |
-| Combined filters | `grep(content="budget", mediatype="spreadsheet")` |
-| Date range | `grep(content="report", modified_after="2026-01-01", modified_before="2026-12-31")` |
-| Paginated results | `grep(name="*.txt", limit=20, offset=40)` |
+| Combined filters | `grep(pattern="budget", mediatype="spreadsheet")` |
+| Date range | `grep(pattern="report", modified_after="2026-01-01", modified_before="2026-12-31")` |
+| Paginated results | `grep(glob="*.txt", limit=20, offset=40)` |
 
 > **When to use `grep` vs `glob`:**
 > - `grep` — fast server-side indexed search, supports content search inside files, best for large trees

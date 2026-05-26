@@ -496,8 +496,8 @@ def get_file_info(
 # --- Server-side search helpers ---
 
 def _build_kql(
-    content: str,
-    name: str,
+    pattern: str,
+    glob: str,
     mediatype: str,
     modified_after: str,
     modified_before: str,
@@ -508,17 +508,17 @@ def _build_kql(
     to prevent injection of unintended query clauses.
     """
     parts: list[str] = []
-    if content:
+    if pattern:
         # Keep word chars, hyphens, apostrophes; strip KQL operators
-        terms = [re.sub(r"[^\w\-']", "", t) for t in content.split()]
+        terms = [re.sub(r"[^\w\-']", "", t) for t in pattern.split()]
         terms = [t for t in terms if t]
         if len(terms) == 1:
             parts.append(f"content:{terms[0]}")
         elif terms:
             parts.append(" AND ".join(f"content:{t}" for t in terms))
-    if name:
+    if glob:
         # Allow glob chars (* ?) and common filename characters
-        safe = re.sub(r"[^\w.*?\-/ ]", "", name)
+        safe = re.sub(r"[^\w.*?\-/ ]", "", glob)
         if safe:
             parts.append(f"name:{safe}")
     if mediatype:
@@ -614,23 +614,24 @@ _SEARCH_XML_TEMPLATE = """\
     }
 )
 def grep(
-    content: Annotated[str, "Full-text content search (Tika) — multiple words are AND'd, e.g. 'quarterly budget'"] = "",
-    name: Annotated[str, "Filename pattern, e.g. '*.pdf', 'report*', 'README'"] = "",
+    pattern: Annotated[str, "Keywords to search file contents (Tika/KQL, NOT regex) — multiple words are AND'd, e.g. 'quarterly budget'"] = "",
+    glob: Annotated[str, "Filename pattern filter, e.g. '*.pdf', 'report*', 'README'"] = "",
+    path: Annotated[str, "Optional path prefix to scope results, e.g. '/Documents' — client-side filter"] = "",
     mediatype: Annotated[str, "Filter: document, spreadsheet, presentation, pdf, image, video, audio, folder, archive"] = "",
     modified_after: Annotated[str, "Only files modified on or after this date (ISO 8601), e.g. '2026-01-01'"] = "",
     modified_before: Annotated[str, "Only files modified on or before this date (ISO 8601), e.g. '2026-12-31'"] = "",
     limit: Annotated[int, "Max results (default 50, max 200)"] = 50,
     offset: Annotated[int, "Pagination offset — skip first N results"] = 0,
 ) -> list[dict] | str:
-    """Search files using OpenCloud's server-side search index (Tika). Content words are AND'd for precise results. Use glob for pattern-based file discovery. At least one search param required."""
+    """Search files using OpenCloud's server-side search index (Tika). Content words are AND'd for precise results. Use glob for pattern-based file discovery. At least one search param required (path alone is not sufficient)."""
     try:
-        if not any([content, name, mediatype, modified_after, modified_before]):
+        if not any([pattern, glob, mediatype, modified_after, modified_before]):
             return format_error(
                 "grep",
-                "At least one search parameter (content, name, mediatype, modified_after, modified_before) is required.",
+                "At least one search parameter (pattern, glob, mediatype, modified_after, modified_before) is required.",
             )
 
-        kql = _build_kql(content, name, mediatype, modified_after, modified_before)
+        kql = _build_kql(pattern, glob, mediatype, modified_after, modified_before)
         limit = min(max(limit, 1), 200)
         offset = max(offset, 0)
 
@@ -661,6 +662,8 @@ def grep(
             return format_error("grep", f"Unexpected response: HTTP {resp.status_code}")
 
         results = _parse_search_response(resp.text)
+        if path:
+            results = [r for r in results if r.get("path", "").startswith(path)]
         results.sort(key=lambda r: r.get("score", 0), reverse=True)
 
         return results
