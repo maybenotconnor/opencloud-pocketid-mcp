@@ -133,6 +133,9 @@ def glob(
                 if len(results) >= limit:
                     return
                 item_path = item.get("name", "")
+                # webdav4 returns paths relative to the base URL (no leading slash)
+                if not item_path.startswith("/"):
+                    item_path = "/" + item_path
                 if item_path.rstrip("/") == dir_path.rstrip("/"):
                     continue
                 name = posixpath.basename(item_path.rstrip("/"))
@@ -315,10 +318,10 @@ def write_file(
 )
 def edit_file(
     path: Annotated[str, "Path to the file to edit, e.g. '/Documents/notes.txt'"],
-    old_string: Annotated[str, "Exact string to find — must appear exactly once in the file"],
-    new_string: Annotated[str, "Replacement string"],
+    old_str: Annotated[str, "Exact string to find — must appear exactly once in the file"],
+    new_str: Annotated[str, "Replacement string"],
 ) -> str:
-    """Make a targeted edit to a text file by replacing an exact string. Fails if old_string is not found or appears more than once (max 1MB)."""
+    """Make a targeted edit to a text file by replacing an exact string. Fails if old_str is not found or appears more than once (max 1MB)."""
     try:
         path = sanitize_path(path)
         client = _get_client()
@@ -339,16 +342,16 @@ def edit_file(
             with open(tmp_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            count = content.count(old_string)
+            count = content.count(old_str)
             if count == 0:
-                return format_error("edit_file", "old_string not found in file")
+                return format_error("edit_file", "old_str not found in file")
             if count > 1:
                 return format_error(
                     "edit_file",
-                    f"old_string found {count} times — provide more context to make it unique",
+                    f"old_str found {count} times — provide more context to make it unique",
                 )
 
-            new_content = content.replace(old_string, new_string, 1)
+            new_content = content.replace(old_str, new_str, 1)
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.write(new_content)
             client.upload_file(tmp_path, path, overwrite=True)

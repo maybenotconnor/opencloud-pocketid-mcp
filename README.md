@@ -2,11 +2,11 @@
 
 A self-hosted [Model Context Protocol](https://modelcontextprotocol.io) server that connects Claude to your OpenCloud files, Radicale calendars, and Radicale contacts. Authenticated via [PocketID](https://pocket-id.org) passkeys. Runs in a single Docker container.
 
-**27 tools** across 3 namespaced servers:
+**25 tools** across 3 namespaced servers:
 
 - `webdav_` (10 tools) -- File management via OpenCloud WebDAV
-- `caldav_` (10 tools) -- Calendar and todo management via Radicale CalDAV
-- `carddav_` (7 tools) -- Contact management via Radicale CardDAV
+- `caldav_` (9 tools) -- Calendar and todo management via Radicale CalDAV
+- `carddav_` (6 tools) -- Contact management via Radicale CardDAV
 
 Built with [FastMCP](https://gofastmcp.com) v3, Python 3.11, and [uv](https://docs.astral.sh/uv/).
 
@@ -108,7 +108,7 @@ curl https://mcp.example.com/health
 1. In [Claude.ai](https://claude.ai), go to **Settings > MCP Connectors**
 2. Add a new connector with URL: `https://mcp.example.com/mcp`
 3. Complete the PocketID passkey login when prompted
-4. All 27 tools are now available in your conversations
+4. All 25 tools are now available in your conversations
 
 This also works with **Claude Code** -- it supports remote MCP servers with OAuth natively.
 
@@ -151,28 +151,26 @@ This also works with **Claude Code** -- it supports remote MCP servers with OAut
 | `webdav_copy` | Copy a file or directory |
 | `webdav_get_file_info` | Get metadata (size, modified, etag, content type) |
 
-### CalDAV -- Calendar and Todos (10 tools)
+### CalDAV -- Calendar and Todos (9 tools)
 
 | Tool | Description |
 |------|-------------|
 | `caldav_list_calendars` | List all calendars |
-| `caldav_get_events` | Get events in a date range (expands recurring) |
+| `caldav_find_events` | Find events by date range (`start`/`end`) and/or text (`query`) |
 | `caldav_create_event` | Create a calendar event |
 | `caldav_update_event` | Partial update of an event by UID |
 | `caldav_delete_event` | Delete an event by UID |
-| `caldav_search_events` | Search events by text (max 30 results) |
-| `caldav_find_todos` | Find todos by date range, text, and/or status |
+| `caldav_find_todos` | Find todos by date range (`start`/`end`), text, and/or status |
 | `caldav_create_todo` | Create a new todo/task |
 | `caldav_update_todo` | Update a todo by UID |
 | `caldav_complete_todo` | Mark a todo as completed with timestamp |
 
-### CardDAV -- Contacts (7 tools)
+### CardDAV -- Contacts (6 tools)
 
 | Tool | Description |
 |------|-------------|
 | `carddav_list_addressbooks` | List all address books |
-| `carddav_get_contacts` | Get contacts (summary view, max 200) |
-| `carddav_search_contacts` | Search by name, email, phone, org (max 30 results) |
+| `carddav_find_contacts` | Find contacts with optional text search (name, email, phone, org) |
 | `carddav_get_contact` | Get full vCard details for a contact |
 | `carddav_create_contact` | Create a new contact |
 | `carddav_update_contact` | Update a contact (preserves PHOTO and other fields) |

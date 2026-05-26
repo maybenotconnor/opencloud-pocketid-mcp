@@ -32,11 +32,11 @@ def mock_client():
 
 
 class TestGlob:
+    # webdav4 ls() returns paths without leading slash (relative to base URL)
     def test_lists_single_directory(self, mock_client):
         mock_client.ls.return_value = [
-            {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
-            {"name": "/file.txt", "type": "file", "content_length": 100, "modified": "2026-01-01"},
-            {"name": "/subdir", "type": "directory", "content_length": 0, "modified": "2026-01-02"},
+            {"name": "file.txt", "type": "file", "content_length": 100, "modified": "2026-01-01"},
+            {"name": "subdir", "type": "directory", "content_length": 0, "modified": "2026-01-02"},
         ]
         result = glob("**/*", depth=1)
         assert isinstance(result, list)
@@ -51,9 +51,8 @@ class TestGlob:
 
     def test_filters_by_extension(self, mock_client):
         mock_client.ls.return_value = [
-            {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
-            {"name": "/readme.md", "type": "file", "content_length": 50, "modified": "2026-01-01"},
-            {"name": "/photo.jpg", "type": "file", "content_length": 200, "modified": "2026-01-02"},
+            {"name": "readme.md", "type": "file", "content_length": 50, "modified": "2026-01-01"},
+            {"name": "photo.jpg", "type": "file", "content_length": 200, "modified": "2026-01-02"},
         ]
         result = glob("*.md", depth=1)
         assert len(result) == 1
@@ -61,9 +60,8 @@ class TestGlob:
 
     def test_filters_by_file_type(self, mock_client):
         mock_client.ls.return_value = [
-            {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
-            {"name": "/file.txt", "type": "file", "content_length": 100, "modified": "2026-01-01"},
-            {"name": "/subdir", "type": "directory", "content_length": 0, "modified": "2026-01-02"},
+            {"name": "file.txt", "type": "file", "content_length": 100, "modified": "2026-01-01"},
+            {"name": "subdir", "type": "directory", "content_length": 0, "modified": "2026-01-02"},
         ]
         result = glob("**/*", file_type="directory", depth=1)
         assert len(result) == 1
@@ -71,18 +69,17 @@ class TestGlob:
 
     def test_filters_by_modified_after(self, mock_client):
         mock_client.ls.return_value = [
-            {"name": "/", "type": "directory", "content_length": 0, "modified": ""},
-            {"name": "/old.txt", "type": "file", "content_length": 50, "modified": "2026-01-01T00:00:00+00:00"},
-            {"name": "/new.txt", "type": "file", "content_length": 50, "modified": "2026-03-05T12:00:00+00:00"},
+            {"name": "old.txt", "type": "file", "content_length": 50, "modified": "2026-01-01T00:00:00+00:00"},
+            {"name": "new.txt", "type": "file", "content_length": 50, "modified": "2026-03-05T12:00:00+00:00"},
         ]
         result = glob("**/*", modified_after="2026-03-01", depth=1)
         assert len(result) == 1
         assert result[0]["name"] == "new.txt"
 
     def test_respects_limit(self, mock_client):
-        items = [{"name": "/", "type": "directory", "content_length": 0, "modified": ""}]
+        items = []
         for i in range(20):
-            items.append({"name": f"/file{i}.txt", "type": "file", "content_length": 10, "modified": "2026-01-01"})
+            items.append({"name": f"file{i}.txt", "type": "file", "content_length": 10, "modified": "2026-01-01"})
         mock_client.ls.return_value = items
         result = glob("**/*", depth=1, limit=5)
         assert len(result) == 6
@@ -92,6 +89,18 @@ class TestGlob:
         mock_client.ls.return_value = []
         glob("/Documents/**/*.pdf")
         mock_client.ls.assert_called_with("/Documents", detail=True)
+
+    def test_absolute_pattern_matches_paths_with_spaces(self, mock_client):
+        # webdav4 returns paths without leading slash; normalization must handle spaces
+        mock_client.ls.return_value = [
+            {"name": "Notes/3 Knowledge/AI Skills/opencloud.md", "type": "file",
+             "content_length": 1024, "modified": "2026-05-01"},
+            {"name": "Notes/3 Knowledge/AI Skills/other.txt", "type": "file",
+             "content_length": 512, "modified": "2026-05-02"},
+        ]
+        result = glob("/Notes/3 Knowledge/**/*.md")
+        assert len(result) == 1
+        assert result[0]["name"] == "opencloud.md"
 
 
 class TestGlobHelpers:
@@ -182,20 +191,20 @@ class TestEditFile:
         mock_client.download_file.side_effect = self._make_download(
             "Hello world\nThis is a test file."
         )
-        result = edit_file("/notes.txt", "Hello world", "Hello OpenCloud")
+        result = edit_file("/notes.txt", old_str="Hello world", new_str="Hello OpenCloud")
         assert "Edited" in result
         mock_client.upload_file.assert_called_once()
 
     def test_not_found(self, mock_client):
         mock_client.info.return_value = {"content_length": 100}
         mock_client.download_file.side_effect = self._make_download("Hello world")
-        result = edit_file("/notes.txt", "missing string", "replacement")
+        result = edit_file("/notes.txt", old_str="missing string", new_str="replacement")
         assert "not found" in result
 
     def test_multiple_matches(self, mock_client):
         mock_client.info.return_value = {"content_length": 100}
         mock_client.download_file.side_effect = self._make_download("foo bar foo")
-        result = edit_file("/notes.txt", "foo", "baz")
+        result = edit_file("/notes.txt", old_str="foo", new_str="baz")
         assert "2" in result
 
     def test_rejects_large_files(self, mock_client):
