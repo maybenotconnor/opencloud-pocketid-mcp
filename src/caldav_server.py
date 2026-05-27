@@ -18,6 +18,7 @@ caldav_server = FastMCP(name="CalDAV")
 
 _client: caldav.DAVClient | None = None
 _principal: caldav.Principal | None = None
+_supported_components_cache: dict[str, list[str]] = {}
 
 
 def _get_principal() -> caldav.Principal:
@@ -64,14 +65,20 @@ def _calendar_supports(cal: caldav.Calendar, component: str) -> bool:
     Returns True when support can't be determined — RFC 4791 says missing
     supported-calendar-component-set means no restriction, so we'd rather
     query and get nothing than hide a calendar the server doesn't report on.
+
+    Cached per calendar URL: get_supported_components() issues its own
+    PROPFIND, and the property is immutable for the calendar's lifetime.
     """
-    try:
-        supported = cal.get_supported_components()
-        if not supported:
-            return True
-        return component in supported
-    except Exception:
+    url = str(cal.url)
+    if url not in _supported_components_cache:
+        try:
+            _supported_components_cache[url] = cal.get_supported_components() or []
+        except Exception:
+            _supported_components_cache[url] = []
+    supported = _supported_components_cache[url]
+    if not supported:
         return True
+    return component in supported
 
 
 def _resolve_calendar(name: str) -> caldav.Calendar:

@@ -9,6 +9,7 @@ from vobject.icalendar import utc
 
 from src.caldav_server import (
     _parse_dt,
+    _supported_components_cache,
     complete_todo,
     create_event,
     create_todo,
@@ -19,6 +20,13 @@ from src.caldav_server import (
     update_event,
     update_todo,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_supports_cache():
+    _supported_components_cache.clear()
+    yield
+    _supported_components_cache.clear()
 
 
 def _make_event_data(summary="Test Event", uid="test-uid-123", include_timestamps=True):
@@ -165,6 +173,20 @@ class TestFindEvents:
         assert len(result) == 1
         assert result[0]["summary"] == "Real event"
         todo_cal.events.assert_not_called()
+
+    def test_supported_components_cached_across_calls(self, mock_principal):
+        # get_supported_components() issues a PROPFIND; cache the result so
+        # repeated find_events() calls don't pay that cost every time.
+        _, calendar = mock_principal
+        mock_event = MagicMock()
+        mock_event.data = _make_event_data()
+        calendar.events.return_value = [mock_event]
+
+        find_events()
+        find_events()
+        find_events()
+
+        assert calendar.get_supported_components.call_count == 1
 
     def test_includes_calendars_with_unknown_support(self, mock_principal):
         # If get_supported_components raises or returns nothing, we include
