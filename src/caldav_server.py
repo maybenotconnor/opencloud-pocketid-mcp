@@ -58,6 +58,22 @@ def _dt_to_str(dt: datetime | None) -> str | None:
     return str(dt)
 
 
+def _calendar_supports(cal: caldav.Calendar, component: str) -> bool:
+    """Whether the calendar advertises support for a component type (e.g. 'VEVENT').
+
+    Returns True when support can't be determined — RFC 4791 says missing
+    supported-calendar-component-set means no restriction, so we'd rather
+    query and get nothing than hide a calendar the server doesn't report on.
+    """
+    try:
+        supported = cal.get_supported_components()
+        if not supported:
+            return True
+        return component in supported
+    except Exception:
+        return True
+
+
 def _resolve_calendar(name: str) -> caldav.Calendar:
     """Resolve a calendar by display name or path."""
     principal = _get_principal()
@@ -163,9 +179,10 @@ def find_events(
     try:
         limit = min(max(limit, 1), 200)
         principal = _get_principal()
-        calendars = (
-            [_resolve_calendar(calendar)] if calendar else principal.calendars()
-        )
+        if calendar:
+            calendars = [_resolve_calendar(calendar)]
+        else:
+            calendars = [c for c in principal.calendars() if _calendar_supports(c, "VEVENT")]
 
         results = []
 
@@ -354,9 +371,10 @@ def find_todos(
     try:
         limit = min(max(limit, 1), 200)
         principal = _get_principal()
-        calendars = (
-            [_resolve_calendar(calendar)] if calendar else principal.calendars()
-        )
+        if calendar:
+            calendars = [_resolve_calendar(calendar)]
+        else:
+            calendars = [c for c in principal.calendars() if _calendar_supports(c, "VTODO")]
 
         start_dt = _parse_dt(start) if start else None
         end_dt = _parse_dt(end) if end else None
