@@ -9,6 +9,7 @@ from vobject.icalendar import utc
 
 from src.caldav_server import (
     _parse_dt,
+    _supported_components_cache,
     complete_todo,
     create_event,
     create_todo,
@@ -19,6 +20,13 @@ from src.caldav_server import (
     update_event,
     update_todo,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_supports_cache():
+    _supported_components_cache.clear()
+    yield
+    _supported_components_cache.clear()
 
 
 def _make_event_data(summary="Test Event", uid="test-uid-123", include_timestamps=True):
@@ -58,6 +66,7 @@ def mock_principal():
     calendar = MagicMock()
     calendar.get_display_name.return_value = "Personal"
     calendar.url = "https://dav.example.com/user/personal/"
+    calendar.get_supported_components.return_value = ["VEVENT", "VTODO"]
     principal.calendars.return_value = [calendar]
     with patch("src.caldav_server._get_principal", return_value=principal):
         yield principal, calendar
@@ -144,6 +153,57 @@ class TestFindEvents:
         assert result[0]["last_modified"] is None
         # dtstamp is auto-set by vobject (RFC 5545 requires it), so it's never None
         assert result[0]["dtstamp"] is not None
+
+    def test_skips_vtodo_only_calendars_when_unspecified(self, mock_principal):
+        # Reminders-type calendars advertise VTODO support only — find_events
+        # should not iterate them when no calendar is named.
+        principal, event_cal = mock_principal
+        todo_cal = MagicMock()
+        todo_cal.get_display_name.return_value = "Reminders"
+        todo_cal.url = "https://dav.example.com/user/reminders/"
+        todo_cal.get_supported_components.return_value = ["VTODO"]
+        principal.calendars.return_value = [event_cal, todo_cal]
+
+        mock_event = MagicMock()
+        mock_event.data = _make_event_data(summary="Real event")
+        event_cal.events.return_value = [mock_event]
+
+        result = find_events()
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]["summary"] == "Real event"
+        todo_cal.events.assert_not_called()
+
+    def test_supported_components_cached_across_calls(self, mock_principal):
+        # get_supported_components() issues a PROPFIND; cache the result so
+        # repeated find_events() calls don't pay that cost every time.
+        _, calendar = mock_principal
+        mock_event = MagicMock()
+        mock_event.data = _make_event_data()
+        calendar.events.return_value = [mock_event]
+
+        find_events()
+        find_events()
+        find_events()
+
+        assert calendar.get_supported_components.call_count == 1
+
+    def test_includes_calendars_with_unknown_support(self, mock_principal):
+        # If get_supported_components raises or returns nothing, we include
+        # the calendar (RFC 4791: missing property = no restriction).
+        principal, event_cal = mock_principal
+        unknown_cal = MagicMock()
+        unknown_cal.get_display_name.return_value = "Unknown"
+        unknown_cal.url = "https://dav.example.com/user/unknown/"
+        unknown_cal.get_supported_components.side_effect = Exception("not advertised")
+        mock_event = MagicMock()
+        mock_event.data = _make_event_data(summary="From unknown", uid="u-2")
+        unknown_cal.events.return_value = [mock_event]
+        principal.calendars.return_value = [unknown_cal]
+
+        result = find_events()
+        assert len(result) == 1
+        assert result[0]["summary"] == "From unknown"
 
 
 class TestCreateEvent:
@@ -243,6 +303,23 @@ class TestFindTodos:
         assert isinstance(result, list)
         assert len(result) == 1
         principal.calendars.assert_called()
+
+    def test_skips_vevent_only_calendars_when_unspecified(self, mock_principal):
+        # Events-only calendars (no VTODO support) should be skipped by find_todos.
+        principal, todo_cal = mock_principal
+        event_cal = MagicMock()
+        event_cal.get_display_name.return_value = "Work"
+        event_cal.url = "https://dav.example.com/user/work/"
+        event_cal.get_supported_components.return_value = ["VEVENT"]
+        principal.calendars.return_value = [todo_cal, event_cal]
+
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data()
+        todo_cal.todos.return_value = [mock_todo]
+
+        result = find_todos()
+        assert len(result) == 1
+        event_cal.todos.assert_not_called()
 
     def test_filters_by_query_text(self, mock_principal):
         _, calendar = mock_principal

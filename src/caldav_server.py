@@ -18,6 +18,7 @@ caldav_server = FastMCP(name="CalDAV")
 
 _client: caldav.DAVClient | None = None
 _principal: caldav.Principal | None = None
+_supported_components_cache: dict[str, list[str]] = {}
 
 
 def _get_principal() -> caldav.Principal:
@@ -56,6 +57,28 @@ def _dt_to_str(dt: datetime | None) -> str | None:
     if hasattr(dt, "isoformat"):
         return dt.isoformat()
     return str(dt)
+
+
+def _calendar_supports(cal: caldav.Calendar, component: str) -> bool:
+    """Whether the calendar advertises support for a component type (e.g. 'VEVENT').
+
+    Returns True when support can't be determined — RFC 4791 says missing
+    supported-calendar-component-set means no restriction, so we'd rather
+    query and get nothing than hide a calendar the server doesn't report on.
+
+    Cached per calendar URL: get_supported_components() issues its own
+    PROPFIND, and the property is immutable for the calendar's lifetime.
+    """
+    url = str(cal.url)
+    if url not in _supported_components_cache:
+        try:
+            _supported_components_cache[url] = cal.get_supported_components() or []
+        except Exception:
+            _supported_components_cache[url] = []
+    supported = _supported_components_cache[url]
+    if not supported:
+        return True
+    return component in supported
 
 
 def _resolve_calendar(name: str) -> caldav.Calendar:
@@ -163,9 +186,10 @@ def find_events(
     try:
         limit = min(max(limit, 1), 200)
         principal = _get_principal()
-        calendars = (
-            [_resolve_calendar(calendar)] if calendar else principal.calendars()
-        )
+        if calendar:
+            calendars = [_resolve_calendar(calendar)]
+        else:
+            calendars = [c for c in principal.calendars() if _calendar_supports(c, "VEVENT")]
 
         results = []
 
@@ -354,9 +378,10 @@ def find_todos(
     try:
         limit = min(max(limit, 1), 200)
         principal = _get_principal()
-        calendars = (
-            [_resolve_calendar(calendar)] if calendar else principal.calendars()
-        )
+        if calendar:
+            calendars = [_resolve_calendar(calendar)]
+        else:
+            calendars = [c for c in principal.calendars() if _calendar_supports(c, "VTODO")]
 
         start_dt = _parse_dt(start) if start else None
         end_dt = _parse_dt(end) if end else None
