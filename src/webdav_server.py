@@ -134,11 +134,11 @@ def _glob_can_descend(dir_path: str, pattern: str) -> bool:
 
 
 def _is_deep_pattern(pattern: str) -> bool:
-    """True when the pattern can match at arbitrary depth.
+    """True when the pattern can match at arbitrary depth ('**' or basename-only).
 
-    '**' patterns and basename-only patterns (no '/') can match anywhere in the
-    tree, so a client-side walk would have to crawl the whole drive one PROPFIND
-    at a time. These are served by the server-side search index instead.
+    Combined with a root ('/') base, such patterns would crawl the whole drive
+    one PROPFIND at a time, so they are served by the search index instead.
+    Folder-scoped deep patterns still walk their subtree (see glob()).
     """
     return "**" in pattern or "/" not in pattern
 
@@ -169,6 +169,29 @@ def _glob_search_name(pattern: str) -> str:
     return re.sub(r"\*+", "*", "".join(out))
 
 
+# Cap on directories visited by the client-side walk, so a scoped pattern over
+# a very large subtree returns (partial) results instead of hanging.
+_WALK_DIR_BUDGET = 400
+
+
+def _to_dt(value: str) -> datetime:
+    """Parse an ISO 8601 or RFC 1123 (HTTP) date into an aware datetime.
+
+    Returns the epoch-min on failure so unparseable entries sort last under a
+    most-recent-first ordering.
+    """
+    if value:
+        for parse in (datetime.fromisoformat, parsedate_to_datetime):
+            try:
+                dt = parse(value)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except (ValueError, TypeError):
+                continue
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
 @webdav_server.tool(
     annotations={
         "readOnlyHint": True,
@@ -183,7 +206,7 @@ def glob(
     depth: Annotated[int, "Max recursion depth. 0 = unlimited, 1 = single directory only"] = 0,
     limit: Annotated[int, "Max results to return (default 100, max 500)"] = 100,
 ) -> list[dict] | str:
-    """Find files by path pattern. Pattern uses glob syntax — ** matches any depth, [..] char classes supported. Examples: /Documents/**/*.pdf, *.txt, **/*report*. Drive-wide patterns ('**'-rooted or basename-only) use the server search index; scoped patterns walk directly. Use grep for full-text content search."""
+    """Find files by path pattern. Pattern uses glob syntax — ** matches any depth, [..] char classes supported. Examples: /Documents/**/*.pdf, *.txt, **/*report*. Results are sorted most-recently-modified first. Drive-wide patterns (rooted at '/' with ** or basename-only) use the server search index; scoped patterns walk that subtree. Use grep for full-text content search."""
     try:
         base_path = sanitize_path(_glob_base(pattern))
         client = _get_client()
@@ -195,26 +218,35 @@ def glob(
             if cutoff.tzinfo is None:
                 cutoff = cutoff.replace(tzinfo=timezone.utc)
 
-        # Unbounded-depth patterns ('**'-rooted or basename-only) would force a
-        # full client-side crawl of the drive. Serve them from the server-side
-        # search index instead — a single request — and fall back to the walk
-        # only when the index is unavailable.
-        if depth == 0 and _is_deep_pattern(pattern):
+        # Drive-wide unbounded-depth patterns (rooted at '/', containing ** or
+        # basename-only) would force a full client-side crawl. Serve them from
+        # the server-side search index — a few requests — falling back to the
+        # walk only when the index is unavailable. Scoped patterns (rooted at a
+        # folder) use the walk so results can't be silently truncated by the
+        # index's global result cap.
+        if depth == 0 and base_path == "/" and _is_deep_pattern(pattern):
             searched = _glob_via_search(pattern, cutoff, file_type, limit)
             if searched is not None:
-                searched.sort(key=lambda r: r["path"])
+                searched.sort(key=lambda r: _to_dt(r.get("modified", "")), reverse=True)
                 if len(searched) >= limit:
                     searched = searched[:limit]
                     searched.append({"note": f"Results truncated at {limit} matches"})
                 return searched
 
         results: list[dict] = []
+        dirs_visited = 0
+        budget_hit = False
 
         def _walk(dir_path: str, current_depth: int) -> None:
-            if len(results) >= limit:
+            nonlocal dirs_visited, budget_hit
+            if len(results) >= limit or budget_hit:
                 return
             if depth > 0 and current_depth > depth:
                 return
+            if dirs_visited >= _WALK_DIR_BUDGET:
+                budget_hit = True
+                return
+            dirs_visited += 1
             try:
                 items = client.ls(dir_path, detail=True)
             except Exception:
@@ -267,10 +299,16 @@ def glob(
                     _walk(item_path, current_depth + 1)
 
         _walk(base_path, 1)
-        results.sort(key=lambda r: r["path"])
+        results.sort(key=lambda r: _to_dt(r.get("modified", "")), reverse=True)
 
         if len(results) >= limit:
+            results = results[:limit]
             results.append({"note": f"Results truncated at {limit} matches"})
+        elif budget_hit:
+            results.append({
+                "note": f"Traversal stopped after {_WALK_DIR_BUDGET} directories — "
+                        "results may be incomplete. Narrow the path or use grep."
+            })
 
         return results
     except ValueError as e:
@@ -695,6 +733,50 @@ _SEARCH_XML_TEMPLATE = """\
 </oc:search-files>"""
 
 
+_SEARCH_PAGE_SIZE = 200
+_SEARCH_MAX_PAGES = 5
+
+
+def _search_index(kql: str, want: int) -> list[dict] | None:
+    """Run paginated REPORT search requests for a KQL query.
+
+    Returns parsed raw results (stopping once ``want`` are collected, the
+    server is exhausted, or the page budget is reached). Returns None — so the
+    caller can fall back — only when the *first* request fails or the index is
+    unavailable; a later-page failure yields what was collected so far.
+    """
+    if not kql:
+        return None
+
+    collected: list[dict] = []
+    for page in range(_SEARCH_MAX_PAGES):
+        body = _SEARCH_XML_TEMPLATE.format(
+            query=_xml_escape(kql),
+            limit=_SEARCH_PAGE_SIZE,
+            offset=page * _SEARCH_PAGE_SIZE,
+        )
+        try:
+            resp = httpx.request(
+                "REPORT",
+                _get_search_url(),
+                auth=(settings.opencloud_username, settings.opencloud_password),
+                headers={"Content-Type": "application/xml"},
+                content=body,
+                follow_redirects=True,
+                timeout=30,
+            )
+        except Exception:
+            return collected or None
+        if resp.status_code != 207:
+            return collected or None
+
+        batch = _parse_search_response(resp.text)
+        collected.extend(batch)
+        if len(batch) < _SEARCH_PAGE_SIZE or len(collected) >= want:
+            break
+    return collected
+
+
 def _glob_via_search(
     pattern: str,
     cutoff: datetime | None,
@@ -706,28 +788,12 @@ def _glob_via_search(
     index is unavailable or the request fails.
     """
     kql = _build_kql("", _glob_search_name(pattern), "", "", "")
-    if not kql:
-        return None
-
-    body = _SEARCH_XML_TEMPLATE.format(query=_xml_escape(kql), limit=200, offset=0)
-    try:
-        resp = httpx.request(
-            "REPORT",
-            _get_search_url(),
-            auth=(settings.opencloud_username, settings.opencloud_password),
-            headers={"Content-Type": "application/xml"},
-            content=body,
-            follow_redirects=True,
-            timeout=30,
-        )
-    except Exception:
-        return None
-
-    if resp.status_code != 207:
+    raw = _search_index(kql, want=limit)
+    if raw is None:
         return None
 
     results: list[dict] = []
-    for r in _parse_search_response(resp.text):
+    for r in raw:
         item_path = r.get("path", "")
         item_type = r.get("type", "file")
         if file_type != "all" and item_type != file_type:

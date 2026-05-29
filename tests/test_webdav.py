@@ -44,9 +44,11 @@ class TestGlob:
         result = glob("**/*", depth=1)
         assert isinstance(result, list)
         assert len(result) == 2
-        assert result[0]["name"] == "file.txt"
-        assert result[1]["name"] == "subdir"
-        assert result[1]["type"] == "directory"
+        # Results are ordered most-recently-modified first (Claude Code parity):
+        # subdir (2026-01-02) precedes file.txt (2026-01-01).
+        assert result[0]["name"] == "subdir"
+        assert result[0]["type"] == "directory"
+        assert result[1]["name"] == "file.txt"
 
     def test_rejects_path_traversal(self):
         result = glob("/../etc/**/*")
@@ -157,6 +159,42 @@ class TestGlob:
         assert len(result) == 1
         assert result[0]["name"] == "opencloud.md"
 
+    def test_scoped_deep_pattern_walks_not_index(self, mock_client):
+        # A folder-scoped '**' pattern must walk that subtree, NOT hit the
+        # global index (whose result cap could silently drop in-folder matches).
+        mock_client.ls.return_value = [
+            {"name": "Notes/a.md", "type": "file", "content_length": 1, "modified": "2026-01-01"},
+        ]
+        with patch("src.webdav_server.httpx.request") as mock_req:
+            result = glob("/Notes/**/*.md")
+            mock_req.assert_not_called()
+        mock_client.ls.assert_called()
+        assert [r["name"] for r in result] == ["a.md"]
+
+    def test_results_sorted_by_modified_desc(self, mock_client):
+        mock_client.ls.return_value = [
+            {"name": "Notes/old.md", "type": "file", "content_length": 1, "modified": "2026-01-01T00:00:00+00:00"},
+            {"name": "Notes/new.md", "type": "file", "content_length": 1, "modified": "2026-05-01T00:00:00+00:00"},
+            {"name": "Notes/mid.md", "type": "file", "content_length": 1, "modified": "2026-03-01T00:00:00+00:00"},
+        ]
+        result = glob("/Notes/*.md")
+        assert [r["name"] for r in result] == ["new.md", "mid.md", "old.md"]
+
+    def test_walk_budget_stops_and_notes(self, mock_client):
+        # A pathologically deep subtree must terminate with a note rather than
+        # crawl forever. Each directory contains one deeper subdirectory.
+        def fake_ls(path, detail=True):
+            depth = path.rstrip("/").count("/")
+            return [{
+                "name": f"{path.rstrip('/')}/d{depth}".lstrip("/"),
+                "type": "directory", "content_length": 0, "modified": "2026-01-01",
+            }]
+        mock_client.ls.side_effect = fake_ls
+        result = glob("/Docs/**/*.pdf")
+        assert any(isinstance(r, dict) and "note" in r for r in result)
+        # The walk visited at most the budget number of directories.
+        assert mock_client.ls.call_count <= 400
+
 
 _GLOB_SEARCH_207 = """\
 <?xml version="1.0" encoding="utf-8"?>
@@ -250,6 +288,52 @@ class TestGlobServerSearch:
         result = glob("**/*obb*", modified_after="2026-01-01")
         # Hobbies.md is now dated 2020 and must be filtered out.
         assert all(r["name"] != "Hobbies.md" for r in result)
+
+    @staticmethod
+    def _page_xml(n, start=0, modified="Mon, 04 May 2026 12:00:00 GMT"):
+        rows = "".join(
+            f"<d:response><d:href>/remote.php/dav/spaces/x/f{i}.md</d:href>"
+            f"<d:propstat><d:prop><oc:name>f{i}.md</oc:name><d:resourcetype/>"
+            f"<d:getcontentlength>1</d:getcontentlength>"
+            f"<d:getlastmodified>{modified}</d:getlastmodified>"
+            f"</d:prop></d:propstat></d:response>"
+            for i in range(start, start + n)
+        )
+        return (
+            '<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
+            f"{rows}</d:multistatus>"
+        )
+
+    def test_paginates_across_pages_until_limit(self, mock_client):
+        # A full first page plus a partial second page: the index is queried
+        # twice (with an advancing offset) to honor a limit above one page.
+        page1 = MagicMock(status_code=207, text=self._page_xml(200, 0))
+        page2 = MagicMock(status_code=207, text=self._page_xml(50, 200))
+        self.mock_request.side_effect = [page1, page2]
+        result = glob("**/*.md", limit=300)
+        assert self.mock_request.call_count == 2
+        second_body = self.mock_request.call_args_list[1].kwargs.get("content", "")
+        assert "<oc:offset>200</oc:offset>" in second_body
+        files = [r for r in result if "path" in r]
+        assert len(files) == 250
+
+    def test_index_results_sorted_by_mtime_desc(self, mock_client):
+        xml = (
+            '<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
+            "<d:response><d:href>/remote.php/dav/spaces/x/older.md</d:href>"
+            "<d:propstat><d:prop><oc:name>older.md</oc:name><d:resourcetype/>"
+            "<d:getlastmodified>Mon, 04 May 2020 12:00:00 GMT</d:getlastmodified>"
+            "</d:prop></d:propstat></d:response>"
+            "<d:response><d:href>/remote.php/dav/spaces/x/newer.md</d:href>"
+            "<d:propstat><d:prop><oc:name>newer.md</oc:name><d:resourcetype/>"
+            "<d:getlastmodified>Mon, 04 May 2026 12:00:00 GMT</d:getlastmodified>"
+            "</d:prop></d:propstat></d:response>"
+            "</d:multistatus>"
+        )
+        self._mock_207(xml=xml)
+        result = glob("**/*.md")
+        names = [r["name"] for r in result if "path" in r]
+        assert names == ["newer.md", "older.md"]
 
 
 class TestGlobHelpers:
