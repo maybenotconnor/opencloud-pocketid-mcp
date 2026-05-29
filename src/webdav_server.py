@@ -1,6 +1,7 @@
 """WebDAV tools for OpenCloud file management. 10 tools."""
 
 import base64
+import fnmatch
 import os
 import posixpath
 import re
@@ -51,6 +52,53 @@ def _glob_base(pattern: str) -> str:
     return prefix[:last_slash] or "/"
 
 
+def _pattern_segments(pattern: str) -> list[str] | None:
+    """Split an absolute glob pattern into lowercase path segments.
+
+    Returns None for basename-only patterns (no '/'), which match at any depth.
+    A '**' segment matches zero or more path segments.
+    """
+    pat = pattern.lower()
+    if "/" not in pat:
+        return None
+    if not pat.startswith("/"):
+        pat = "/" + pat
+    return [seg for seg in pat.split("/") if seg != ""]
+
+
+def _reachable_states(path_segs: list[str], pat_segs: list[str]) -> set[int]:
+    """Run a small segment NFA and return the pattern positions reachable
+    after consuming all of ``path_segs``.
+
+    Position ``len(pat_segs)`` means the whole pattern was consumed (a full
+    match). A '**' segment may consume zero or more path segments.
+    """
+    def closure(states: set[int]) -> set[int]:
+        result = set(states)
+        stack = list(states)
+        while stack:
+            s = stack.pop()
+            # '**' may match zero segments — skip past it.
+            if s < len(pat_segs) and pat_segs[s] == "**" and s + 1 not in result:
+                result.add(s + 1)
+                stack.append(s + 1)
+        return result
+
+    states = closure({0})
+    for seg in path_segs:
+        nxt: set[int] = set()
+        for s in states:
+            if s >= len(pat_segs):
+                continue
+            tok = pat_segs[s]
+            if tok == "**":
+                nxt.add(s)  # '**' consumes this segment and stays
+            elif fnmatch.fnmatch(seg, tok):
+                nxt.add(s + 1)
+        states = closure(nxt)
+    return states
+
+
 def _glob_match(item_path: str, pattern: str) -> bool:
     """Match a full item path against a glob pattern with ** support (case-insensitive).
 
@@ -59,37 +107,29 @@ def _glob_match(item_path: str, pattern: str) -> bool:
     Patterns without / are matched against the basename only.
     """
     item = item_path.lower().rstrip("/")
-    pat = pattern.lower()
+    pat_segs = _pattern_segments(pattern)
+    if pat_segs is None:
+        return fnmatch.fnmatch(posixpath.basename(item), pattern.lower())
+    path_segs = [seg for seg in item.split("/") if seg != ""]
+    return len(pat_segs) in _reachable_states(path_segs, pat_segs)
 
-    if "/" not in pat:
-        import fnmatch
-        return fnmatch.fnmatch(posixpath.basename(item), pat)
 
-    if not pat.startswith("/"):
-        pat = "/" + pat
+def _glob_can_descend(dir_path: str, pattern: str) -> bool:
+    """Return True if some item *beneath* ``dir_path`` could still match the pattern.
 
-    # Build regex token by token
-    regex_parts = ["^"]
-    i = 0
-    while i < len(pat):
-        if pat[i:i + 3] == "**/":
-            # Zero or more path segments followed by /
-            regex_parts.append("(?:.+/)?")
-            i += 3
-        elif pat[i:i + 2] == "**":
-            regex_parts.append(".*")
-            i += 2
-        elif pat[i] == "*":
-            regex_parts.append("[^/]*")
-            i += 1
-        elif pat[i] == "?":
-            regex_parts.append("[^/]")
-            i += 1
-        else:
-            regex_parts.append(re.escape(pat[i]))
-            i += 1
-    regex_parts.append("$")
-    return bool(re.match("".join(regex_parts), item))
+    Used to prune the recursive walk: a directory is only entered when the
+    pattern can match something deeper. Conservative — when in doubt it returns
+    True, so a real match is never pruned.
+    """
+    pat_segs = _pattern_segments(pattern)
+    if pat_segs is None:
+        # Basename-only patterns can match at any depth.
+        return True
+    path_segs = [seg for seg in dir_path.lower().rstrip("/").split("/") if seg != ""]
+    states = _reachable_states(path_segs, pat_segs)
+    # Descending is worthwhile only if the pattern still has tokens left to
+    # match further segments from at least one reachable state.
+    return any(s < len(pat_segs) for s in states)
 
 
 @webdav_server.tool(
@@ -142,17 +182,17 @@ def glob(
                 is_dir = item.get("type") == "directory"
                 item_type = "directory" if is_dir else "file"
 
+                # Only recurse when the pattern can still match something deeper.
+                # This prunes the walk so a pattern like '/Documents/*.pdf' no
+                # longer crawls the entire subtree one PROPFIND at a time.
+                recurse = is_dir and _glob_can_descend(item_path, pattern)
+
+                matched = True
                 if file_type != "all" and item_type != file_type:
-                    if is_dir:
-                        _walk(item_path, current_depth + 1)
-                    continue
-
-                if not _glob_match(item_path.rstrip("/"), pattern):
-                    if is_dir:
-                        _walk(item_path, current_depth + 1)
-                    continue
-
-                if cutoff:
+                    matched = False
+                if matched and not _glob_match(item_path.rstrip("/"), pattern):
+                    matched = False
+                if matched and cutoff:
                     mod_str = item.get("modified", "")
                     if mod_str:
                         try:
@@ -160,21 +200,20 @@ def glob(
                             if mod_dt.tzinfo is None:
                                 mod_dt = mod_dt.replace(tzinfo=timezone.utc)
                             if mod_dt < cutoff:
-                                if is_dir:
-                                    _walk(item_path, current_depth + 1)
-                                continue
+                                matched = False
                         except (ValueError, TypeError):
                             pass
 
-                results.append({
-                    "name": name,
-                    "path": item_path,
-                    "size": item.get("content_length", 0),
-                    "modified": item.get("modified", ""),
-                    "type": item_type,
-                })
+                if matched:
+                    results.append({
+                        "name": name,
+                        "path": item_path,
+                        "size": item.get("content_length", 0),
+                        "modified": item.get("modified", ""),
+                        "type": item_type,
+                    })
 
-                if is_dir:
+                if recurse:
                     _walk(item_path, current_depth + 1)
 
         _walk(base_path, 1)

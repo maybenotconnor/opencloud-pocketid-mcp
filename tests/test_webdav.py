@@ -8,6 +8,7 @@ from mcp.types import ImageContent
 from src.webdav_server import (
     _build_kql,
     _glob_base,
+    _glob_can_descend,
     _glob_match,
     _parse_search_response,
     copy,
@@ -90,6 +91,58 @@ class TestGlob:
         glob("/Documents/**/*.pdf")
         mock_client.ls.assert_called_with("/Documents", detail=True)
 
+    def test_does_not_recurse_for_single_level_pattern(self, mock_client):
+        # '/Docs/*.pdf' only matches direct children, so sibling subdirectories
+        # must NOT be walked — this is the performance fix.
+        def fake_ls(path, detail=True):
+            if path.rstrip("/") == "/Docs":
+                return [
+                    {"name": "Docs/a.pdf", "type": "file", "content_length": 1, "modified": "2026-01-01"},
+                    {"name": "Docs/Photos", "type": "directory", "content_length": 0, "modified": "2026-01-01"},
+                ]
+            raise AssertionError(f"glob recursed into {path!r}; should have been pruned")
+        mock_client.ls.side_effect = fake_ls
+        result = glob("/Docs/*.pdf")
+        assert [r["name"] for r in result] == ["a.pdf"]
+        mock_client.ls.assert_called_once_with("/Docs", detail=True)
+
+    def test_prunes_sibling_branches_for_prefixed_pattern(self, mock_client):
+        # '/Docs/Reports/**/*.pdf' must descend into Reports but skip Photos.
+        calls = []
+
+        def fake_ls(path, detail=True):
+            calls.append(path.rstrip("/"))
+            if path.rstrip("/") == "/Docs":
+                return [
+                    {"name": "Docs/Reports", "type": "directory", "content_length": 0, "modified": "2026-01-01"},
+                    {"name": "Docs/Photos", "type": "directory", "content_length": 0, "modified": "2026-01-01"},
+                ]
+            if path.rstrip("/") == "/Docs/Reports":
+                return [
+                    {"name": "Docs/Reports/q1.pdf", "type": "file", "content_length": 1, "modified": "2026-01-01"},
+                ]
+            raise AssertionError(f"glob recursed into {path!r}; should have been pruned")
+        mock_client.ls.side_effect = fake_ls
+        result = glob("/Docs/Reports/**/*.pdf")
+        assert [r["name"] for r in result] == ["q1.pdf"]
+        assert "/Docs/Photos" not in calls
+
+    def test_recurses_for_double_star_pattern(self, mock_client):
+        # '**' patterns legitimately need to walk every subdirectory.
+        def fake_ls(path, detail=True):
+            if path.rstrip("/") == "/Docs":
+                return [
+                    {"name": "Docs/sub", "type": "directory", "content_length": 0, "modified": "2026-01-01"},
+                ]
+            if path.rstrip("/") == "/Docs/sub":
+                return [
+                    {"name": "Docs/sub/deep.pdf", "type": "file", "content_length": 1, "modified": "2026-01-01"},
+                ]
+            return []
+        mock_client.ls.side_effect = fake_ls
+        result = glob("/Docs/**/*.pdf")
+        assert [r["name"] for r in result] == ["deep.pdf"]
+
     def test_absolute_pattern_matches_paths_with_spaces(self, mock_client):
         # webdav4 returns paths without leading slash; normalization must handle spaces
         mock_client.ls.return_value = [
@@ -133,6 +186,24 @@ class TestGlobHelpers:
 
     def test_glob_match_case_insensitive(self):
         assert _glob_match("/Documents/Report.PDF", "/Documents/*.pdf")
+
+    def test_can_descend_basename_pattern_always_true(self):
+        assert _glob_can_descend("/anything/here", "*.pdf")
+
+    def test_can_descend_single_level_pattern_prunes(self):
+        # '/Documents/*.pdf' matches only direct children of /Documents
+        assert _glob_can_descend("/Documents", "/Documents/*.pdf")
+        assert not _glob_can_descend("/Documents/sub", "/Documents/*.pdf")
+        assert not _glob_can_descend("/Other", "/Documents/*.pdf")
+
+    def test_can_descend_double_star_descends_deep(self):
+        assert _glob_can_descend("/Documents", "/Documents/**/*.pdf")
+        assert _glob_can_descend("/Documents/a/b/c", "/Documents/**/*.pdf")
+        assert not _glob_can_descend("/Other", "/Documents/**/*.pdf")
+
+    def test_can_descend_prefixed_pattern_prunes_siblings(self):
+        assert _glob_can_descend("/Docs/Reports", "/Docs/Reports/**/*.pdf")
+        assert not _glob_can_descend("/Docs/Photos", "/Docs/Reports/**/*.pdf")
 
 
 class TestReadFile:
