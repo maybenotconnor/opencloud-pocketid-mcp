@@ -8,7 +8,10 @@ from mcp.types import ImageContent
 from src.webdav_server import (
     _build_kql,
     _glob_base,
+    _glob_can_descend,
     _glob_match,
+    _glob_search_name,
+    _is_deep_pattern,
     _parse_search_response,
     copy,
     delete,
@@ -41,9 +44,11 @@ class TestGlob:
         result = glob("**/*", depth=1)
         assert isinstance(result, list)
         assert len(result) == 2
-        assert result[0]["name"] == "file.txt"
-        assert result[1]["name"] == "subdir"
-        assert result[1]["type"] == "directory"
+        # Results are ordered most-recently-modified first (Claude Code parity):
+        # subdir (2026-01-02) precedes file.txt (2026-01-01).
+        assert result[0]["name"] == "subdir"
+        assert result[0]["type"] == "directory"
+        assert result[1]["name"] == "file.txt"
 
     def test_rejects_path_traversal(self):
         result = glob("/../etc/**/*")
@@ -90,6 +95,58 @@ class TestGlob:
         glob("/Documents/**/*.pdf")
         mock_client.ls.assert_called_with("/Documents", detail=True)
 
+    def test_does_not_recurse_for_single_level_pattern(self, mock_client):
+        # '/Docs/*.pdf' only matches direct children, so sibling subdirectories
+        # must NOT be walked — this is the performance fix.
+        def fake_ls(path, detail=True):
+            if path.rstrip("/") == "/Docs":
+                return [
+                    {"name": "Docs/a.pdf", "type": "file", "content_length": 1, "modified": "2026-01-01"},
+                    {"name": "Docs/Photos", "type": "directory", "content_length": 0, "modified": "2026-01-01"},
+                ]
+            raise AssertionError(f"glob recursed into {path!r}; should have been pruned")
+        mock_client.ls.side_effect = fake_ls
+        result = glob("/Docs/*.pdf")
+        assert [r["name"] for r in result] == ["a.pdf"]
+        mock_client.ls.assert_called_once_with("/Docs", detail=True)
+
+    def test_prunes_sibling_branches_for_prefixed_pattern(self, mock_client):
+        # '/Docs/Reports/**/*.pdf' must descend into Reports but skip Photos.
+        calls = []
+
+        def fake_ls(path, detail=True):
+            calls.append(path.rstrip("/"))
+            if path.rstrip("/") == "/Docs":
+                return [
+                    {"name": "Docs/Reports", "type": "directory", "content_length": 0, "modified": "2026-01-01"},
+                    {"name": "Docs/Photos", "type": "directory", "content_length": 0, "modified": "2026-01-01"},
+                ]
+            if path.rstrip("/") == "/Docs/Reports":
+                return [
+                    {"name": "Docs/Reports/q1.pdf", "type": "file", "content_length": 1, "modified": "2026-01-01"},
+                ]
+            raise AssertionError(f"glob recursed into {path!r}; should have been pruned")
+        mock_client.ls.side_effect = fake_ls
+        result = glob("/Docs/Reports/**/*.pdf")
+        assert [r["name"] for r in result] == ["q1.pdf"]
+        assert "/Docs/Photos" not in calls
+
+    def test_recurses_for_double_star_pattern(self, mock_client):
+        # '**' patterns legitimately need to walk every subdirectory.
+        def fake_ls(path, detail=True):
+            if path.rstrip("/") == "/Docs":
+                return [
+                    {"name": "Docs/sub", "type": "directory", "content_length": 0, "modified": "2026-01-01"},
+                ]
+            if path.rstrip("/") == "/Docs/sub":
+                return [
+                    {"name": "Docs/sub/deep.pdf", "type": "file", "content_length": 1, "modified": "2026-01-01"},
+                ]
+            return []
+        mock_client.ls.side_effect = fake_ls
+        result = glob("/Docs/**/*.pdf")
+        assert [r["name"] for r in result] == ["deep.pdf"]
+
     def test_absolute_pattern_matches_paths_with_spaces(self, mock_client):
         # webdav4 returns paths without leading slash; normalization must handle spaces
         mock_client.ls.return_value = [
@@ -101,6 +158,182 @@ class TestGlob:
         result = glob("/Notes/3 Knowledge/**/*.md")
         assert len(result) == 1
         assert result[0]["name"] == "opencloud.md"
+
+    def test_scoped_deep_pattern_walks_not_index(self, mock_client):
+        # A folder-scoped '**' pattern must walk that subtree, NOT hit the
+        # global index (whose result cap could silently drop in-folder matches).
+        mock_client.ls.return_value = [
+            {"name": "Notes/a.md", "type": "file", "content_length": 1, "modified": "2026-01-01"},
+        ]
+        with patch("src.webdav_server.httpx.request") as mock_req:
+            result = glob("/Notes/**/*.md")
+            mock_req.assert_not_called()
+        mock_client.ls.assert_called()
+        assert [r["name"] for r in result] == ["a.md"]
+
+    def test_results_sorted_by_modified_desc(self, mock_client):
+        mock_client.ls.return_value = [
+            {"name": "Notes/old.md", "type": "file", "content_length": 1, "modified": "2026-01-01T00:00:00+00:00"},
+            {"name": "Notes/new.md", "type": "file", "content_length": 1, "modified": "2026-05-01T00:00:00+00:00"},
+            {"name": "Notes/mid.md", "type": "file", "content_length": 1, "modified": "2026-03-01T00:00:00+00:00"},
+        ]
+        result = glob("/Notes/*.md")
+        assert [r["name"] for r in result] == ["new.md", "mid.md", "old.md"]
+
+    def test_walk_budget_stops_and_notes(self, mock_client):
+        # A pathologically deep subtree must terminate with a note rather than
+        # crawl forever. Each directory contains one deeper subdirectory.
+        def fake_ls(path, detail=True):
+            depth = path.rstrip("/").count("/")
+            return [{
+                "name": f"{path.rstrip('/')}/d{depth}".lstrip("/"),
+                "type": "directory", "content_length": 0, "modified": "2026-01-01",
+            }]
+        mock_client.ls.side_effect = fake_ls
+        result = glob("/Docs/**/*.pdf")
+        assert any(isinstance(r, dict) and "note" in r for r in result)
+        # The walk visited at most the budget number of directories.
+        assert mock_client.ls.call_count <= 400
+
+
+_GLOB_SEARCH_207 = """\
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc-123/Personal/Hobbies.md</d:href>
+    <d:propstat><d:prop>
+      <oc:name>Hobbies.md</oc:name>
+      <d:resourcetype/>
+      <d:getcontentlength>120</d:getcontentlength>
+      <d:getlastmodified>Mon, 04 May 2026 12:00:00 GMT</d:getlastmodified>
+    </d:prop></d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc-123/Work/cobbler.txt</d:href>
+    <d:propstat><d:prop>
+      <oc:name>cobbler.txt</oc:name>
+      <d:resourcetype/>
+      <d:getcontentlength>50</d:getcontentlength>
+      <d:getlastmodified>Mon, 04 May 2026 12:00:00 GMT</d:getlastmodified>
+    </d:prop></d:propstat>
+  </d:response>
+</d:multistatus>"""
+
+
+class TestGlobServerSearch:
+    """Deep ('**'-rooted / basename-only) globs are served by the search index."""
+
+    @pytest.fixture(autouse=True)
+    def mock_httpx(self):
+        with patch("src.webdav_server.httpx.request") as mock_req:
+            self.mock_request = mock_req
+            yield mock_req
+
+    def _mock_207(self, xml=_GLOB_SEARCH_207):
+        resp = MagicMock()
+        resp.status_code = 207
+        resp.text = xml
+        self.mock_request.return_value = resp
+
+    def test_deep_pattern_uses_index_not_walk(self, mock_client):
+        self._mock_207()
+        result = glob("**/*[Hh]obb*")
+        # Server search index was queried...
+        assert self.mock_request.called
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        assert "name:*obb*" in body
+        # ...and the walk was never invoked.
+        mock_client.ls.assert_not_called()
+
+    def test_char_class_post_filter_excludes_non_matches(self, mock_client):
+        # 'cobbler' contains 'obb' (so the broadened server query returns it)
+        # but does NOT match '*[Hh]obb*', so the exact post-filter drops it.
+        self._mock_207()
+        result = glob("**/*[Hh]obb*")
+        names = [r["name"] for r in result]
+        assert "Hobbies.md" in names
+        assert "cobbler.txt" not in names
+
+    def test_basename_only_pattern_uses_index(self, mock_client):
+        self._mock_207()
+        glob("*.pdf")
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        assert "name:*.pdf" in body
+        mock_client.ls.assert_not_called()
+
+    def test_explicit_depth_uses_walk_not_index(self, mock_client):
+        # A bounded depth means the user wants a scoped walk, not a drive search.
+        mock_client.ls.return_value = []
+        glob("**/*", depth=1)
+        self.mock_request.assert_not_called()
+        mock_client.ls.assert_called()
+
+    def test_falls_back_to_walk_when_index_unavailable(self, mock_client):
+        resp = MagicMock()
+        resp.status_code = 501
+        self.mock_request.return_value = resp
+        mock_client.ls.return_value = [
+            {"name": "Hobbies.md", "type": "file", "content_length": 1, "modified": "2026-05-04"},
+        ]
+        result = glob("**/*[Hh]obb*")
+        # Index said "unavailable", so we fell back to the walk.
+        mock_client.ls.assert_called()
+        assert [r["name"] for r in result] == ["Hobbies.md"]
+
+    def test_modified_after_filters_index_results(self, mock_client):
+        xml = _GLOB_SEARCH_207.replace(
+            "Mon, 04 May 2026 12:00:00 GMT", "Mon, 04 May 2020 12:00:00 GMT", 1
+        )
+        self._mock_207(xml=xml)
+        result = glob("**/*obb*", modified_after="2026-01-01")
+        # Hobbies.md is now dated 2020 and must be filtered out.
+        assert all(r["name"] != "Hobbies.md" for r in result)
+
+    @staticmethod
+    def _page_xml(n, start=0, modified="Mon, 04 May 2026 12:00:00 GMT"):
+        rows = "".join(
+            f"<d:response><d:href>/remote.php/dav/spaces/x/f{i}.md</d:href>"
+            f"<d:propstat><d:prop><oc:name>f{i}.md</oc:name><d:resourcetype/>"
+            f"<d:getcontentlength>1</d:getcontentlength>"
+            f"<d:getlastmodified>{modified}</d:getlastmodified>"
+            f"</d:prop></d:propstat></d:response>"
+            for i in range(start, start + n)
+        )
+        return (
+            '<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
+            f"{rows}</d:multistatus>"
+        )
+
+    def test_paginates_across_pages_until_limit(self, mock_client):
+        # A full first page plus a partial second page: the index is queried
+        # twice (with an advancing offset) to honor a limit above one page.
+        page1 = MagicMock(status_code=207, text=self._page_xml(200, 0))
+        page2 = MagicMock(status_code=207, text=self._page_xml(50, 200))
+        self.mock_request.side_effect = [page1, page2]
+        result = glob("**/*.md", limit=300)
+        assert self.mock_request.call_count == 2
+        second_body = self.mock_request.call_args_list[1].kwargs.get("content", "")
+        assert "<oc:offset>200</oc:offset>" in second_body
+        files = [r for r in result if "path" in r]
+        assert len(files) == 250
+
+    def test_index_results_sorted_by_mtime_desc(self, mock_client):
+        xml = (
+            '<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
+            "<d:response><d:href>/remote.php/dav/spaces/x/older.md</d:href>"
+            "<d:propstat><d:prop><oc:name>older.md</oc:name><d:resourcetype/>"
+            "<d:getlastmodified>Mon, 04 May 2020 12:00:00 GMT</d:getlastmodified>"
+            "</d:prop></d:propstat></d:response>"
+            "<d:response><d:href>/remote.php/dav/spaces/x/newer.md</d:href>"
+            "<d:propstat><d:prop><oc:name>newer.md</oc:name><d:resourcetype/>"
+            "<d:getlastmodified>Mon, 04 May 2026 12:00:00 GMT</d:getlastmodified>"
+            "</d:prop></d:propstat></d:response>"
+            "</d:multistatus>"
+        )
+        self._mock_207(xml=xml)
+        result = glob("**/*.md")
+        names = [r["name"] for r in result if "path" in r]
+        assert names == ["newer.md", "older.md"]
 
 
 class TestGlobHelpers:
@@ -133,6 +366,43 @@ class TestGlobHelpers:
 
     def test_glob_match_case_insensitive(self):
         assert _glob_match("/Documents/Report.PDF", "/Documents/*.pdf")
+
+    def test_can_descend_basename_pattern_always_true(self):
+        assert _glob_can_descend("/anything/here", "*.pdf")
+
+    def test_can_descend_single_level_pattern_prunes(self):
+        # '/Documents/*.pdf' matches only direct children of /Documents
+        assert _glob_can_descend("/Documents", "/Documents/*.pdf")
+        assert not _glob_can_descend("/Documents/sub", "/Documents/*.pdf")
+        assert not _glob_can_descend("/Other", "/Documents/*.pdf")
+
+    def test_can_descend_double_star_descends_deep(self):
+        assert _glob_can_descend("/Documents", "/Documents/**/*.pdf")
+        assert _glob_can_descend("/Documents/a/b/c", "/Documents/**/*.pdf")
+        assert not _glob_can_descend("/Other", "/Documents/**/*.pdf")
+
+    def test_can_descend_prefixed_pattern_prunes_siblings(self):
+        assert _glob_can_descend("/Docs/Reports", "/Docs/Reports/**/*.pdf")
+        assert not _glob_can_descend("/Docs/Photos", "/Docs/Reports/**/*.pdf")
+
+    def test_glob_match_char_class(self):
+        assert _glob_match("/notes/Hobbies.md", "**/*[Hh]obb*")
+        assert _glob_match("/notes/hobby.md", "**/*[Hh]obb*")
+        assert not _glob_match("/notes/cobbler.txt", "**/*[Hh]obb*")
+
+    def test_is_deep_pattern(self):
+        assert _is_deep_pattern("**/*[Hh]obb*")
+        assert _is_deep_pattern("**/*.pdf")
+        assert _is_deep_pattern("*.pdf")          # basename-only -> any depth
+        assert _is_deep_pattern("report")
+        assert not _is_deep_pattern("/Documents/*.pdf")
+        assert not _is_deep_pattern("/Documents/report.pdf")
+
+    def test_glob_search_name_widens_specials(self):
+        assert _glob_search_name("**/*[Hh]obb*") == "*obb*"
+        assert _glob_search_name("*.pdf") == "*.pdf"
+        assert _glob_search_name("**/*report*") == "*report*"
+        assert _glob_search_name("file?.txt") == "file*.txt"
 
 
 class TestReadFile:

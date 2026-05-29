@@ -1,11 +1,13 @@
 """WebDAV tools for OpenCloud file management. 10 tools."""
 
 import base64
+import fnmatch
 import os
 import posixpath
 import re
 import tempfile
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Annotated
 from urllib.parse import unquote
 
@@ -51,6 +53,53 @@ def _glob_base(pattern: str) -> str:
     return prefix[:last_slash] or "/"
 
 
+def _pattern_segments(pattern: str) -> list[str] | None:
+    """Split an absolute glob pattern into lowercase path segments.
+
+    Returns None for basename-only patterns (no '/'), which match at any depth.
+    A '**' segment matches zero or more path segments.
+    """
+    pat = pattern.lower()
+    if "/" not in pat:
+        return None
+    if not pat.startswith("/"):
+        pat = "/" + pat
+    return [seg for seg in pat.split("/") if seg != ""]
+
+
+def _reachable_states(path_segs: list[str], pat_segs: list[str]) -> set[int]:
+    """Run a small segment NFA and return the pattern positions reachable
+    after consuming all of ``path_segs``.
+
+    Position ``len(pat_segs)`` means the whole pattern was consumed (a full
+    match). A '**' segment may consume zero or more path segments.
+    """
+    def closure(states: set[int]) -> set[int]:
+        result = set(states)
+        stack = list(states)
+        while stack:
+            s = stack.pop()
+            # '**' may match zero segments — skip past it.
+            if s < len(pat_segs) and pat_segs[s] == "**" and s + 1 not in result:
+                result.add(s + 1)
+                stack.append(s + 1)
+        return result
+
+    states = closure({0})
+    for seg in path_segs:
+        nxt: set[int] = set()
+        for s in states:
+            if s >= len(pat_segs):
+                continue
+            tok = pat_segs[s]
+            if tok == "**":
+                nxt.add(s)  # '**' consumes this segment and stays
+            elif fnmatch.fnmatch(seg, tok):
+                nxt.add(s + 1)
+        states = closure(nxt)
+    return states
+
+
 def _glob_match(item_path: str, pattern: str) -> bool:
     """Match a full item path against a glob pattern with ** support (case-insensitive).
 
@@ -59,37 +108,88 @@ def _glob_match(item_path: str, pattern: str) -> bool:
     Patterns without / are matched against the basename only.
     """
     item = item_path.lower().rstrip("/")
-    pat = pattern.lower()
+    pat_segs = _pattern_segments(pattern)
+    if pat_segs is None:
+        return fnmatch.fnmatch(posixpath.basename(item), pattern.lower())
+    path_segs = [seg for seg in item.split("/") if seg != ""]
+    return len(pat_segs) in _reachable_states(path_segs, pat_segs)
 
-    if "/" not in pat:
-        import fnmatch
-        return fnmatch.fnmatch(posixpath.basename(item), pat)
 
-    if not pat.startswith("/"):
-        pat = "/" + pat
+def _glob_can_descend(dir_path: str, pattern: str) -> bool:
+    """Return True if some item *beneath* ``dir_path`` could still match the pattern.
 
-    # Build regex token by token
-    regex_parts = ["^"]
+    Used to prune the recursive walk: a directory is only entered when the
+    pattern can match something deeper. Conservative — when in doubt it returns
+    True, so a real match is never pruned.
+    """
+    pat_segs = _pattern_segments(pattern)
+    if pat_segs is None:
+        # Basename-only patterns can match at any depth.
+        return True
+    path_segs = [seg for seg in dir_path.lower().rstrip("/").split("/") if seg != ""]
+    states = _reachable_states(path_segs, pat_segs)
+    # Descending is worthwhile only if the pattern still has tokens left to
+    # match further segments from at least one reachable state.
+    return any(s < len(pat_segs) for s in states)
+
+
+def _is_deep_pattern(pattern: str) -> bool:
+    """True when the pattern can match at arbitrary depth ('**' or basename-only).
+
+    Combined with a root ('/') base, such patterns would crawl the whole drive
+    one PROPFIND at a time, so they are served by the search index instead.
+    Folder-scoped deep patterns still walk their subtree (see glob()).
+    """
+    return "**" in pattern or "/" not in pattern
+
+
+def _glob_search_name(pattern: str) -> str:
+    """Derive a KQL ``name:`` filter that is a *superset* of the pattern's
+    basename match, so post-filtering with ``_glob_match`` stays correct.
+
+    The basename token's wildcards/char-classes are widened to ``*`` (e.g.
+    ``*[Hh]obb*`` -> ``*obb*``); literal runs are preserved to keep the
+    server-side query selective.
+    """
+    token = pattern.rsplit("/", 1)[-1]
+    out: list[str] = []
     i = 0
-    while i < len(pat):
-        if pat[i:i + 3] == "**/":
-            # Zero or more path segments followed by /
-            regex_parts.append("(?:.+/)?")
-            i += 3
-        elif pat[i:i + 2] == "**":
-            regex_parts.append(".*")
-            i += 2
-        elif pat[i] == "*":
-            regex_parts.append("[^/]*")
+    while i < len(token):
+        c = token[i]
+        if c in "*?":
+            out.append("*")
             i += 1
-        elif pat[i] == "?":
-            regex_parts.append("[^/]")
-            i += 1
+        elif c == "[":
+            j = token.find("]", i + 1)
+            out.append("*")
+            i = j + 1 if j != -1 else i + 1
         else:
-            regex_parts.append(re.escape(pat[i]))
+            out.append(c)
             i += 1
-    regex_parts.append("$")
-    return bool(re.match("".join(regex_parts), item))
+    return re.sub(r"\*+", "*", "".join(out))
+
+
+# Cap on directories visited by the client-side walk, so a scoped pattern over
+# a very large subtree returns (partial) results instead of hanging.
+_WALK_DIR_BUDGET = 400
+
+
+def _to_dt(value: str) -> datetime:
+    """Parse an ISO 8601 or RFC 1123 (HTTP) date into an aware datetime.
+
+    Returns the epoch-min on failure so unparseable entries sort last under a
+    most-recent-first ordering.
+    """
+    if value:
+        for parse in (datetime.fromisoformat, parsedate_to_datetime):
+            try:
+                dt = parse(value)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except (ValueError, TypeError):
+                continue
+    return datetime.min.replace(tzinfo=timezone.utc)
 
 
 @webdav_server.tool(
@@ -106,7 +206,7 @@ def glob(
     depth: Annotated[int, "Max recursion depth. 0 = unlimited, 1 = single directory only"] = 0,
     limit: Annotated[int, "Max results to return (default 100, max 500)"] = 100,
 ) -> list[dict] | str:
-    """Find files by path pattern. Pattern uses glob syntax — ** matches any depth. Examples: /Documents/**/*.pdf, *.txt, **/*report*. Use grep for full-text content search."""
+    """Find files by path pattern. Pattern uses glob syntax — ** matches any depth, [..] char classes supported. Examples: /Documents/**/*.pdf, *.txt, **/*report*. Results are sorted most-recently-modified first. Drive-wide patterns (rooted at '/' with ** or basename-only) use the server search index; scoped patterns walk that subtree. Use grep for full-text content search."""
     try:
         base_path = sanitize_path(_glob_base(pattern))
         client = _get_client()
@@ -118,13 +218,35 @@ def glob(
             if cutoff.tzinfo is None:
                 cutoff = cutoff.replace(tzinfo=timezone.utc)
 
+        # Drive-wide unbounded-depth patterns (rooted at '/', containing ** or
+        # basename-only) would force a full client-side crawl. Serve them from
+        # the server-side search index — a few requests — falling back to the
+        # walk only when the index is unavailable. Scoped patterns (rooted at a
+        # folder) use the walk so results can't be silently truncated by the
+        # index's global result cap.
+        if depth == 0 and base_path == "/" and _is_deep_pattern(pattern):
+            searched = _glob_via_search(pattern, cutoff, file_type, limit)
+            if searched is not None:
+                searched.sort(key=lambda r: _to_dt(r.get("modified", "")), reverse=True)
+                if len(searched) >= limit:
+                    searched = searched[:limit]
+                    searched.append({"note": f"Results truncated at {limit} matches"})
+                return searched
+
         results: list[dict] = []
+        dirs_visited = 0
+        budget_hit = False
 
         def _walk(dir_path: str, current_depth: int) -> None:
-            if len(results) >= limit:
+            nonlocal dirs_visited, budget_hit
+            if len(results) >= limit or budget_hit:
                 return
             if depth > 0 and current_depth > depth:
                 return
+            if dirs_visited >= _WALK_DIR_BUDGET:
+                budget_hit = True
+                return
+            dirs_visited += 1
             try:
                 items = client.ls(dir_path, detail=True)
             except Exception:
@@ -142,17 +264,17 @@ def glob(
                 is_dir = item.get("type") == "directory"
                 item_type = "directory" if is_dir else "file"
 
+                # Only recurse when the pattern can still match something deeper.
+                # This prunes the walk so a pattern like '/Documents/*.pdf' no
+                # longer crawls the entire subtree one PROPFIND at a time.
+                recurse = is_dir and _glob_can_descend(item_path, pattern)
+
+                matched = True
                 if file_type != "all" and item_type != file_type:
-                    if is_dir:
-                        _walk(item_path, current_depth + 1)
-                    continue
-
-                if not _glob_match(item_path.rstrip("/"), pattern):
-                    if is_dir:
-                        _walk(item_path, current_depth + 1)
-                    continue
-
-                if cutoff:
+                    matched = False
+                if matched and not _glob_match(item_path.rstrip("/"), pattern):
+                    matched = False
+                if matched and cutoff:
                     mod_str = item.get("modified", "")
                     if mod_str:
                         try:
@@ -160,28 +282,33 @@ def glob(
                             if mod_dt.tzinfo is None:
                                 mod_dt = mod_dt.replace(tzinfo=timezone.utc)
                             if mod_dt < cutoff:
-                                if is_dir:
-                                    _walk(item_path, current_depth + 1)
-                                continue
+                                matched = False
                         except (ValueError, TypeError):
                             pass
 
-                results.append({
-                    "name": name,
-                    "path": item_path,
-                    "size": item.get("content_length", 0),
-                    "modified": item.get("modified", ""),
-                    "type": item_type,
-                })
+                if matched:
+                    results.append({
+                        "name": name,
+                        "path": item_path,
+                        "size": item.get("content_length", 0),
+                        "modified": item.get("modified", ""),
+                        "type": item_type,
+                    })
 
-                if is_dir:
+                if recurse:
                     _walk(item_path, current_depth + 1)
 
         _walk(base_path, 1)
-        results.sort(key=lambda r: r["path"])
+        results.sort(key=lambda r: _to_dt(r.get("modified", "")), reverse=True)
 
         if len(results) >= limit:
+            results = results[:limit]
             results.append({"note": f"Results truncated at {limit} matches"})
+        elif budget_hit:
+            results.append({
+                "note": f"Traversal stopped after {_WALK_DIR_BUDGET} directories — "
+                        "results may be incomplete. Narrow the path or use grep."
+            })
 
         return results
     except ValueError as e:
@@ -604,6 +731,94 @@ _SEARCH_XML_TEMPLATE = """\
     <oc:offset>{offset}</oc:offset>
   </oc:search>
 </oc:search-files>"""
+
+
+_SEARCH_PAGE_SIZE = 200
+_SEARCH_MAX_PAGES = 5
+
+
+def _search_index(kql: str, want: int) -> list[dict] | None:
+    """Run paginated REPORT search requests for a KQL query.
+
+    Returns parsed raw results (stopping once ``want`` are collected, the
+    server is exhausted, or the page budget is reached). Returns None — so the
+    caller can fall back — only when the *first* request fails or the index is
+    unavailable; a later-page failure yields what was collected so far.
+    """
+    if not kql:
+        return None
+
+    collected: list[dict] = []
+    for page in range(_SEARCH_MAX_PAGES):
+        body = _SEARCH_XML_TEMPLATE.format(
+            query=_xml_escape(kql),
+            limit=_SEARCH_PAGE_SIZE,
+            offset=page * _SEARCH_PAGE_SIZE,
+        )
+        try:
+            resp = httpx.request(
+                "REPORT",
+                _get_search_url(),
+                auth=(settings.opencloud_username, settings.opencloud_password),
+                headers={"Content-Type": "application/xml"},
+                content=body,
+                follow_redirects=True,
+                timeout=30,
+            )
+        except Exception:
+            return collected or None
+        if resp.status_code != 207:
+            return collected or None
+
+        batch = _parse_search_response(resp.text)
+        collected.extend(batch)
+        if len(batch) < _SEARCH_PAGE_SIZE or len(collected) >= want:
+            break
+    return collected
+
+
+def _glob_via_search(
+    pattern: str,
+    cutoff: datetime | None,
+    file_type: str,
+    limit: int,
+) -> list[dict] | None:
+    """Resolve a glob via the server-side search index, post-filtering for exact
+    glob semantics. Returns None (so the caller falls back to the walk) when the
+    index is unavailable or the request fails.
+    """
+    kql = _build_kql("", _glob_search_name(pattern), "", "", "")
+    raw = _search_index(kql, want=limit)
+    if raw is None:
+        return None
+
+    results: list[dict] = []
+    for r in raw:
+        item_path = r.get("path", "")
+        item_type = r.get("type", "file")
+        if file_type != "all" and item_type != file_type:
+            continue
+        if not _glob_match(item_path.rstrip("/"), pattern):
+            continue
+        if cutoff:
+            mod_str = r.get("modified", "")
+            if mod_str:
+                try:
+                    mod_dt = parsedate_to_datetime(mod_str)
+                    if mod_dt.tzinfo is None:
+                        mod_dt = mod_dt.replace(tzinfo=timezone.utc)
+                    if mod_dt < cutoff:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+        results.append({
+            "name": r.get("name", "") or posixpath.basename(item_path.rstrip("/")),
+            "path": item_path,
+            "size": r.get("size", 0),
+            "modified": r.get("modified", ""),
+            "type": item_type,
+        })
+    return results
 
 
 @webdav_server.tool(
