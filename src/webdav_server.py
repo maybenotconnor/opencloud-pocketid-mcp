@@ -7,6 +7,7 @@ import posixpath
 import re
 import tempfile
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Annotated
 from urllib.parse import unquote
 
@@ -132,6 +133,42 @@ def _glob_can_descend(dir_path: str, pattern: str) -> bool:
     return any(s < len(pat_segs) for s in states)
 
 
+def _is_deep_pattern(pattern: str) -> bool:
+    """True when the pattern can match at arbitrary depth.
+
+    '**' patterns and basename-only patterns (no '/') can match anywhere in the
+    tree, so a client-side walk would have to crawl the whole drive one PROPFIND
+    at a time. These are served by the server-side search index instead.
+    """
+    return "**" in pattern or "/" not in pattern
+
+
+def _glob_search_name(pattern: str) -> str:
+    """Derive a KQL ``name:`` filter that is a *superset* of the pattern's
+    basename match, so post-filtering with ``_glob_match`` stays correct.
+
+    The basename token's wildcards/char-classes are widened to ``*`` (e.g.
+    ``*[Hh]obb*`` -> ``*obb*``); literal runs are preserved to keep the
+    server-side query selective.
+    """
+    token = pattern.rsplit("/", 1)[-1]
+    out: list[str] = []
+    i = 0
+    while i < len(token):
+        c = token[i]
+        if c in "*?":
+            out.append("*")
+            i += 1
+        elif c == "[":
+            j = token.find("]", i + 1)
+            out.append("*")
+            i = j + 1 if j != -1 else i + 1
+        else:
+            out.append(c)
+            i += 1
+    return re.sub(r"\*+", "*", "".join(out))
+
+
 @webdav_server.tool(
     annotations={
         "readOnlyHint": True,
@@ -146,7 +183,7 @@ def glob(
     depth: Annotated[int, "Max recursion depth. 0 = unlimited, 1 = single directory only"] = 0,
     limit: Annotated[int, "Max results to return (default 100, max 500)"] = 100,
 ) -> list[dict] | str:
-    """Find files by path pattern. Pattern uses glob syntax — ** matches any depth. Examples: /Documents/**/*.pdf, *.txt, **/*report*. Use grep for full-text content search."""
+    """Find files by path pattern. Pattern uses glob syntax — ** matches any depth, [..] char classes supported. Examples: /Documents/**/*.pdf, *.txt, **/*report*. Drive-wide patterns ('**'-rooted or basename-only) use the server search index; scoped patterns walk directly. Use grep for full-text content search."""
     try:
         base_path = sanitize_path(_glob_base(pattern))
         client = _get_client()
@@ -157,6 +194,19 @@ def glob(
             cutoff = datetime.fromisoformat(modified_after)
             if cutoff.tzinfo is None:
                 cutoff = cutoff.replace(tzinfo=timezone.utc)
+
+        # Unbounded-depth patterns ('**'-rooted or basename-only) would force a
+        # full client-side crawl of the drive. Serve them from the server-side
+        # search index instead — a single request — and fall back to the walk
+        # only when the index is unavailable.
+        if depth == 0 and _is_deep_pattern(pattern):
+            searched = _glob_via_search(pattern, cutoff, file_type, limit)
+            if searched is not None:
+                searched.sort(key=lambda r: r["path"])
+                if len(searched) >= limit:
+                    searched = searched[:limit]
+                    searched.append({"note": f"Results truncated at {limit} matches"})
+                return searched
 
         results: list[dict] = []
 
@@ -643,6 +693,66 @@ _SEARCH_XML_TEMPLATE = """\
     <oc:offset>{offset}</oc:offset>
   </oc:search>
 </oc:search-files>"""
+
+
+def _glob_via_search(
+    pattern: str,
+    cutoff: datetime | None,
+    file_type: str,
+    limit: int,
+) -> list[dict] | None:
+    """Resolve a glob via the server-side search index, post-filtering for exact
+    glob semantics. Returns None (so the caller falls back to the walk) when the
+    index is unavailable or the request fails.
+    """
+    kql = _build_kql("", _glob_search_name(pattern), "", "", "")
+    if not kql:
+        return None
+
+    body = _SEARCH_XML_TEMPLATE.format(query=_xml_escape(kql), limit=200, offset=0)
+    try:
+        resp = httpx.request(
+            "REPORT",
+            _get_search_url(),
+            auth=(settings.opencloud_username, settings.opencloud_password),
+            headers={"Content-Type": "application/xml"},
+            content=body,
+            follow_redirects=True,
+            timeout=30,
+        )
+    except Exception:
+        return None
+
+    if resp.status_code != 207:
+        return None
+
+    results: list[dict] = []
+    for r in _parse_search_response(resp.text):
+        item_path = r.get("path", "")
+        item_type = r.get("type", "file")
+        if file_type != "all" and item_type != file_type:
+            continue
+        if not _glob_match(item_path.rstrip("/"), pattern):
+            continue
+        if cutoff:
+            mod_str = r.get("modified", "")
+            if mod_str:
+                try:
+                    mod_dt = parsedate_to_datetime(mod_str)
+                    if mod_dt.tzinfo is None:
+                        mod_dt = mod_dt.replace(tzinfo=timezone.utc)
+                    if mod_dt < cutoff:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+        results.append({
+            "name": r.get("name", "") or posixpath.basename(item_path.rstrip("/")),
+            "path": item_path,
+            "size": r.get("size", 0),
+            "modified": r.get("modified", ""),
+            "type": item_type,
+        })
+    return results
 
 
 @webdav_server.tool(

@@ -10,6 +10,8 @@ from src.webdav_server import (
     _glob_base,
     _glob_can_descend,
     _glob_match,
+    _glob_search_name,
+    _is_deep_pattern,
     _parse_search_response,
     copy,
     delete,
@@ -156,6 +158,100 @@ class TestGlob:
         assert result[0]["name"] == "opencloud.md"
 
 
+_GLOB_SEARCH_207 = """\
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc-123/Personal/Hobbies.md</d:href>
+    <d:propstat><d:prop>
+      <oc:name>Hobbies.md</oc:name>
+      <d:resourcetype/>
+      <d:getcontentlength>120</d:getcontentlength>
+      <d:getlastmodified>Mon, 04 May 2026 12:00:00 GMT</d:getlastmodified>
+    </d:prop></d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc-123/Work/cobbler.txt</d:href>
+    <d:propstat><d:prop>
+      <oc:name>cobbler.txt</oc:name>
+      <d:resourcetype/>
+      <d:getcontentlength>50</d:getcontentlength>
+      <d:getlastmodified>Mon, 04 May 2026 12:00:00 GMT</d:getlastmodified>
+    </d:prop></d:propstat>
+  </d:response>
+</d:multistatus>"""
+
+
+class TestGlobServerSearch:
+    """Deep ('**'-rooted / basename-only) globs are served by the search index."""
+
+    @pytest.fixture(autouse=True)
+    def mock_httpx(self):
+        with patch("src.webdav_server.httpx.request") as mock_req:
+            self.mock_request = mock_req
+            yield mock_req
+
+    def _mock_207(self, xml=_GLOB_SEARCH_207):
+        resp = MagicMock()
+        resp.status_code = 207
+        resp.text = xml
+        self.mock_request.return_value = resp
+
+    def test_deep_pattern_uses_index_not_walk(self, mock_client):
+        self._mock_207()
+        result = glob("**/*[Hh]obb*")
+        # Server search index was queried...
+        assert self.mock_request.called
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        assert "name:*obb*" in body
+        # ...and the walk was never invoked.
+        mock_client.ls.assert_not_called()
+
+    def test_char_class_post_filter_excludes_non_matches(self, mock_client):
+        # 'cobbler' contains 'obb' (so the broadened server query returns it)
+        # but does NOT match '*[Hh]obb*', so the exact post-filter drops it.
+        self._mock_207()
+        result = glob("**/*[Hh]obb*")
+        names = [r["name"] for r in result]
+        assert "Hobbies.md" in names
+        assert "cobbler.txt" not in names
+
+    def test_basename_only_pattern_uses_index(self, mock_client):
+        self._mock_207()
+        glob("*.pdf")
+        body = self.mock_request.call_args.kwargs.get("content", "")
+        assert "name:*.pdf" in body
+        mock_client.ls.assert_not_called()
+
+    def test_explicit_depth_uses_walk_not_index(self, mock_client):
+        # A bounded depth means the user wants a scoped walk, not a drive search.
+        mock_client.ls.return_value = []
+        glob("**/*", depth=1)
+        self.mock_request.assert_not_called()
+        mock_client.ls.assert_called()
+
+    def test_falls_back_to_walk_when_index_unavailable(self, mock_client):
+        resp = MagicMock()
+        resp.status_code = 501
+        self.mock_request.return_value = resp
+        mock_client.ls.return_value = [
+            {"name": "Hobbies.md", "type": "file", "content_length": 1, "modified": "2026-05-04"},
+        ]
+        result = glob("**/*[Hh]obb*")
+        # Index said "unavailable", so we fell back to the walk.
+        mock_client.ls.assert_called()
+        assert [r["name"] for r in result] == ["Hobbies.md"]
+
+    def test_modified_after_filters_index_results(self, mock_client):
+        xml = _GLOB_SEARCH_207.replace(
+            "Mon, 04 May 2026 12:00:00 GMT", "Mon, 04 May 2020 12:00:00 GMT", 1
+        )
+        self._mock_207(xml=xml)
+        result = glob("**/*obb*", modified_after="2026-01-01")
+        # Hobbies.md is now dated 2020 and must be filtered out.
+        assert all(r["name"] != "Hobbies.md" for r in result)
+
+
 class TestGlobHelpers:
     def test_glob_base_absolute_with_wildcard(self):
         assert _glob_base("/Documents/**/*.pdf") == "/Documents"
@@ -204,6 +300,25 @@ class TestGlobHelpers:
     def test_can_descend_prefixed_pattern_prunes_siblings(self):
         assert _glob_can_descend("/Docs/Reports", "/Docs/Reports/**/*.pdf")
         assert not _glob_can_descend("/Docs/Photos", "/Docs/Reports/**/*.pdf")
+
+    def test_glob_match_char_class(self):
+        assert _glob_match("/notes/Hobbies.md", "**/*[Hh]obb*")
+        assert _glob_match("/notes/hobby.md", "**/*[Hh]obb*")
+        assert not _glob_match("/notes/cobbler.txt", "**/*[Hh]obb*")
+
+    def test_is_deep_pattern(self):
+        assert _is_deep_pattern("**/*[Hh]obb*")
+        assert _is_deep_pattern("**/*.pdf")
+        assert _is_deep_pattern("*.pdf")          # basename-only -> any depth
+        assert _is_deep_pattern("report")
+        assert not _is_deep_pattern("/Documents/*.pdf")
+        assert not _is_deep_pattern("/Documents/report.pdf")
+
+    def test_glob_search_name_widens_specials(self):
+        assert _glob_search_name("**/*[Hh]obb*") == "*obb*"
+        assert _glob_search_name("*.pdf") == "*.pdf"
+        assert _glob_search_name("**/*report*") == "*report*"
+        assert _glob_search_name("file?.txt") == "file*.txt"
 
 
 class TestReadFile:
