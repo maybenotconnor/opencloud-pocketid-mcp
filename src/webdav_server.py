@@ -43,7 +43,7 @@ def _glob_base(pattern: str) -> str:
     """Extract the non-wildcard prefix directory from a glob pattern."""
     idx = len(pattern)
     for i, c in enumerate(pattern):
-        if c in ("*", "?"):
+        if c in ("*", "?", "[", "{"):
             idx = i
             break
     prefix = pattern[:idx]
@@ -51,6 +51,68 @@ def _glob_base(pattern: str) -> str:
     if last_slash <= 0:
         return "/"
     return prefix[:last_slash] or "/"
+
+
+_MAX_BRACE_EXPANSIONS = 64
+
+
+def _split_top_commas(s: str) -> list[str]:
+    """Split on commas that are not nested inside a deeper brace group."""
+    parts: list[str] = []
+    depth = 0
+    cur: list[str] = []
+    for c in s:
+        if c == "{":
+            depth += 1
+            cur.append(c)
+        elif c == "}":
+            depth -= 1
+            cur.append(c)
+        elif c == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+    parts.append("".join(cur))
+    return parts
+
+
+def _expand_braces(pattern: str, _depth: int = 0) -> list[str]:
+    """Expand brace alternations: 'a{b,c}d' -> ['abd', 'acd'].
+
+    Handles nested and multiple groups; a comma-less group (e.g. '{x}') is left
+    literal. Expansion is capped to avoid combinatorial blowup.
+    """
+    if "{" not in pattern or _depth > 10:
+        return [pattern]
+    i = 0
+    n = len(pattern)
+    while i < n:
+        if pattern[i] == "{":
+            depth = 1
+            j = i + 1
+            has_comma = False
+            while j < n and depth > 0:
+                c = pattern[j]
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                elif c == "," and depth == 1:
+                    has_comma = True
+                j += 1
+            if depth == 0 and has_comma:
+                close = j - 1
+                prefix, suffix = pattern[:i], pattern[close + 1:]
+                out: list[str] = []
+                for opt in _split_top_commas(pattern[i + 1:close]):
+                    out.extend(_expand_braces(prefix + opt + suffix, _depth + 1))
+                    if len(out) >= _MAX_BRACE_EXPANSIONS:
+                        break
+                return out[:_MAX_BRACE_EXPANSIONS]
+            # Unbalanced or comma-less '{': treat literally, keep scanning.
+        i += 1
+    return [pattern]
 
 
 def _pattern_segments(pattern: str) -> list[str] | None:
@@ -101,12 +163,16 @@ def _reachable_states(path_segs: list[str], pat_segs: list[str]) -> set[int]:
 
 
 def _glob_match(item_path: str, pattern: str) -> bool:
-    """Match a full item path against a glob pattern with ** support (case-insensitive).
+    """Match a full item path against a glob pattern (case-insensitive).
 
-    * matches any characters except /
-    ** matches zero or more path segments (including their separators)
-    Patterns without / are matched against the basename only.
+    Supports *, ?, [..] char classes, {a,b} alternation, and ** (zero or more
+    path segments). Patterns without / are matched against the basename only.
     """
+    return any(_glob_match_one(item_path, p) for p in _expand_braces(pattern))
+
+
+def _glob_match_one(item_path: str, pattern: str) -> bool:
+    """Match a single brace-free glob pattern against a full item path."""
     item = item_path.lower().rstrip("/")
     pat_segs = _pattern_segments(pattern)
     if pat_segs is None:
@@ -116,12 +182,17 @@ def _glob_match(item_path: str, pattern: str) -> bool:
 
 
 def _glob_can_descend(dir_path: str, pattern: str) -> bool:
-    """Return True if some item *beneath* ``dir_path`` could still match the pattern.
+    """Return True if some item *beneath* ``dir_path`` could still match the
+    pattern (for any brace expansion).
 
-    Used to prune the recursive walk: a directory is only entered when the
-    pattern can match something deeper. Conservative — when in doubt it returns
-    True, so a real match is never pruned.
+    Used to prune the walk: a directory is only entered when the pattern can
+    match something deeper. Conservative — when in doubt it returns True, so a
+    real match is never pruned.
     """
+    return any(_can_descend_one(dir_path, p) for p in _expand_braces(pattern))
+
+
+def _can_descend_one(dir_path: str, pattern: str) -> bool:
     pat_segs = _pattern_segments(pattern)
     if pat_segs is None:
         # Basename-only patterns can match at any depth.
@@ -169,9 +240,11 @@ def _glob_search_name(pattern: str) -> str:
     return re.sub(r"\*+", "*", "".join(out))
 
 
-# Cap on directories visited by the client-side walk, so a scoped pattern over
-# a very large subtree returns (partial) results instead of hanging.
-_WALK_DIR_BUDGET = 400
+# The client-side walk lists each level's directories concurrently and stops
+# after a budget of directories, so a scoped pattern over a very large subtree
+# returns (partial) results instead of hanging.
+_WALK_CONCURRENCY = 12
+_WALK_DIR_BUDGET = 800
 
 
 def _to_dt(value: str) -> datetime:
@@ -236,69 +309,71 @@ def glob(
         results: list[dict] = []
         dirs_visited = 0
         budget_hit = False
+        frontier = [base_path]
+        current_depth = 1
 
-        def _walk(dir_path: str, current_depth: int) -> None:
-            nonlocal dirs_visited, budget_hit
-            if len(results) >= limit or budget_hit:
-                return
-            if depth > 0 and current_depth > depth:
-                return
-            if dirs_visited >= _WALK_DIR_BUDGET:
-                budget_hit = True
-                return
-            dirs_visited += 1
+        def _list_dir(dir_path: str) -> list[dict]:
             try:
-                items = client.ls(dir_path, detail=True)
+                return client.ls(dir_path, detail=True)
             except Exception:
-                return
-            for item in items:
-                if len(results) >= limit:
-                    return
-                item_path = item.get("name", "")
-                # webdav4 returns paths relative to the base URL (no leading slash)
-                if not item_path.startswith("/"):
-                    item_path = "/" + item_path
-                if item_path.rstrip("/") == dir_path.rstrip("/"):
-                    continue
-                name = posixpath.basename(item_path.rstrip("/"))
-                is_dir = item.get("type") == "directory"
-                item_type = "directory" if is_dir else "file"
+                return []
 
-                # Only recurse when the pattern can still match something deeper.
-                # This prunes the walk so a pattern like '/Documents/*.pdf' no
-                # longer crawls the entire subtree one PROPFIND at a time.
-                recurse = is_dir and _glob_can_descend(item_path, pattern)
+        # Breadth-first walk, listing each level's directories concurrently so
+        # the per-directory PROPFIND round-trips overlap instead of serializing.
+        with ThreadPoolExecutor(max_workers=_WALK_CONCURRENCY) as pool:
+            while frontier and len(results) < limit and not budget_hit:
+                if depth > 0 and current_depth > depth:
+                    break
+                batch = frontier
+                if dirs_visited + len(batch) > _WALK_DIR_BUDGET:
+                    batch = batch[: max(0, _WALK_DIR_BUDGET - dirs_visited)]
+                    budget_hit = True
+                dirs_visited += len(batch)
 
-                matched = True
-                if file_type != "all" and item_type != file_type:
-                    matched = False
-                if matched and not _glob_match(item_path.rstrip("/"), pattern):
-                    matched = False
-                if matched and cutoff:
-                    mod_str = item.get("modified", "")
-                    if mod_str:
-                        try:
-                            mod_dt = datetime.fromisoformat(str(mod_str))
-                            if mod_dt.tzinfo is None:
-                                mod_dt = mod_dt.replace(tzinfo=timezone.utc)
-                            if mod_dt < cutoff:
-                                matched = False
-                        except (ValueError, TypeError):
-                            pass
+                next_frontier: list[str] = []
+                for dir_path, items in zip(batch, pool.map(_list_dir, batch)):
+                    for item in items:
+                        item_path = item.get("name", "")
+                        # webdav4 returns paths relative to the base URL.
+                        if not item_path.startswith("/"):
+                            item_path = "/" + item_path
+                        if item_path.rstrip("/") == dir_path.rstrip("/"):
+                            continue
+                        is_dir = item.get("type") == "directory"
+                        item_type = "directory" if is_dir else "file"
 
-                if matched:
-                    results.append({
-                        "name": name,
-                        "path": item_path,
-                        "size": item.get("content_length", 0),
-                        "modified": item.get("modified", ""),
-                        "type": item_type,
-                    })
+                        # Queue subdirs only when the pattern can still match
+                        # something deeper, pruning branches that can't match.
+                        if is_dir and _glob_can_descend(item_path, pattern):
+                            next_frontier.append(item_path)
 
-                if recurse:
-                    _walk(item_path, current_depth + 1)
+                        if file_type != "all" and item_type != file_type:
+                            continue
+                        if not _glob_match(item_path.rstrip("/"), pattern):
+                            continue
+                        if cutoff:
+                            mod_str = item.get("modified", "")
+                            if mod_str:
+                                try:
+                                    mod_dt = datetime.fromisoformat(str(mod_str))
+                                    if mod_dt.tzinfo is None:
+                                        mod_dt = mod_dt.replace(tzinfo=timezone.utc)
+                                    if mod_dt < cutoff:
+                                        continue
+                                except (ValueError, TypeError):
+                                    pass
 
-        _walk(base_path, 1)
+                        results.append({
+                            "name": posixpath.basename(item_path.rstrip("/")),
+                            "path": item_path,
+                            "size": item.get("content_length", 0),
+                            "modified": item.get("modified", ""),
+                            "type": item_type,
+                        })
+
+                frontier = next_frontier
+                current_depth += 1
+
         results.sort(key=lambda r: _to_dt(r.get("modified", "")), reverse=True)
 
         if len(results) >= limit:
@@ -787,9 +862,23 @@ def _glob_via_search(
     glob semantics. Returns None (so the caller falls back to the walk) when the
     index is unavailable or the request fails.
     """
-    kql = _build_kql("", _glob_search_name(pattern), "", "", "")
-    raw = _search_index(kql, want=limit)
-    if raw is None:
+    # A braced pattern expands to several name filters; query each, dedupe by
+    # path, then post-filter with the full (braced) matcher.
+    name_filters = {_glob_search_name(p) for p in _expand_braces(pattern)}
+    raw: list[dict] = []
+    seen: set[str] = set()
+    index_ok = False
+    for nf in name_filters:
+        batch = _search_index(_build_kql("", nf, "", "", ""), want=limit)
+        if batch is None:
+            continue
+        index_ok = True
+        for r in batch:
+            path = r.get("path", "")
+            if path not in seen:
+                seen.add(path)
+                raw.append(r)
+    if not index_ok:
         return None
 
     results: list[dict] = []

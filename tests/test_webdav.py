@@ -193,7 +193,35 @@ class TestGlob:
         result = glob("/Docs/**/*.pdf")
         assert any(isinstance(r, dict) and "note" in r for r in result)
         # The walk visited at most the budget number of directories.
-        assert mock_client.ls.call_count <= 400
+        assert mock_client.ls.call_count <= _WALK_DIR_BUDGET
+
+    def test_brace_expansion_matches_each_alternative(self, mock_client):
+        # '{md,txt}' must match both extensions; '.pdf' must be excluded.
+        mock_client.ls.return_value = [
+            {"name": "Docs/a.md", "type": "file", "content_length": 1, "modified": "2026-01-03"},
+            {"name": "Docs/b.txt", "type": "file", "content_length": 1, "modified": "2026-01-02"},
+            {"name": "Docs/c.pdf", "type": "file", "content_length": 1, "modified": "2026-01-01"},
+        ]
+        result = glob("/Docs/*.{md,txt}")
+        names = {r["name"] for r in result if "path" in r}
+        assert names == {"a.md", "b.txt"}
+
+
+class TestExpandBraces:
+    def test_no_braces_is_identity(self):
+        assert _expand_braces("**/*.md") == ["**/*.md"]
+
+    def test_simple_alternation(self):
+        assert _expand_braces("/a/*.{ts,js}") == ["/a/*.ts", "/a/*.js"]
+
+    def test_nested(self):
+        assert _expand_braces("x{a,{b,c}}y") == ["xay", "xby", "xcy"]
+
+    def test_multiple_groups(self):
+        assert _expand_braces("{a,b}{1,2}") == ["a1", "a2", "b1", "b2"]
+
+    def test_commaless_group_is_literal(self):
+        assert _expand_braces("/a/{x}.md") == ["/a/{x}.md"]
 
 
 _GLOB_SEARCH_207 = """\
@@ -316,6 +344,16 @@ class TestGlobServerSearch:
         assert "<oc:offset>200</oc:offset>" in second_body
         files = [r for r in result if "path" in r]
         assert len(files) == 250
+
+    def test_brace_pattern_queries_each_alternative(self, mock_client):
+        # '**/*.{ts,js}' must issue a name query per alternative.
+        self._mock_207(xml=self._page_xml(1, 0))
+        glob("**/*.{ts,js}")
+        bodies = [c.kwargs.get("content", "") for c in self.mock_request.call_args_list]
+        joined = "\n".join(bodies)
+        assert "name:*.ts" in joined
+        assert "name:*.js" in joined
+        mock_client.ls.assert_not_called()
 
     def test_index_results_sorted_by_mtime_desc(self, mock_client):
         xml = (
