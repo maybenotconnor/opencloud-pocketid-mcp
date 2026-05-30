@@ -664,13 +664,13 @@ class TestSearch:
         assert result[0]["score"] == 0.85
         assert result[1]["name"] == "2026.xlsx"
         body = self.mock_request.call_args.kwargs.get("content", "")
-        assert "content:budget" in body
+        assert "(name:*budget* OR content:budget)" in body
 
     def test_multi_word_content_uses_and(self):
         self._mock_207()
         search(pattern="quarterly budget")
         body = self.mock_request.call_args.kwargs.get("content", "")
-        assert "content:quarterly AND content:budget" in body
+        assert "(name:*quarterly* OR content:quarterly) AND (name:*budget* OR content:budget)" in body
 
     def test_glob_search(self):
         self._mock_207()
@@ -696,7 +696,7 @@ class TestSearch:
         self._mock_207()
         search(pattern="report", mediatype="pdf", modified_after="2026-01-01", modified_before="2026-06-30")
         body = self.mock_request.call_args.kwargs.get("content", "")
-        assert "content:report" in body
+        assert "(name:*report* OR content:report)" in body
         assert "mediatype:pdf" in body
         assert "mtime&gt;=2026-01-01" in body
         assert "mtime&lt;=2026-06-30" in body
@@ -766,15 +766,20 @@ class TestSearch:
 
 
 class TestBuildKql:
-    def test_single_content(self):
-        assert _build_kql("budget", "", "", "", "") == "content:budget"
+    def test_single_term_matches_name_or_content(self):
+        assert _build_kql("budget", "", "", "", "") == "(name:*budget* OR content:budget)"
 
-    def test_multi_word_content_and(self):
-        assert _build_kql("quarterly budget", "", "", "", "") == "content:quarterly AND content:budget"
+    def test_multi_word_terms_anded(self):
+        assert _build_kql("quarterly budget", "", "", "", "") == (
+            "(name:*quarterly* OR content:quarterly) AND (name:*budget* OR content:budget)"
+        )
 
-    def test_three_word_content_and(self):
+    def test_three_word_terms_anded(self):
         result = _build_kql("q4 financial report", "", "", "", "")
-        assert result == "content:q4 AND content:financial AND content:report"
+        assert result == (
+            "(name:*q4* OR content:q4) AND (name:*financial* OR content:financial) "
+            "AND (name:*report* OR content:report)"
+        )
 
     def test_single_name(self):
         assert _build_kql("", "*.pdf", "", "", "") == "name:*.pdf"
@@ -787,7 +792,10 @@ class TestBuildKql:
 
     def test_combined(self):
         result = _build_kql("report", "*.pdf", "document", "2026-01-01", "2026-12-31")
-        assert result == "content:report name:*.pdf mediatype:document mtime>=2026-01-01 mtime<=2026-12-31"
+        assert result == (
+            "(name:*report* OR content:report) name:*.pdf mediatype:document "
+            "mtime>=2026-01-01 mtime<=2026-12-31"
+        )
 
     def test_empty(self):
         assert _build_kql("", "", "", "", "") == ""

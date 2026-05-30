@@ -715,10 +715,12 @@ def _build_kql(
         # Keep word chars, hyphens, apostrophes; strip KQL operators
         terms = [re.sub(r"[^\w\-']", "", t) for t in pattern.split()]
         terms = [t for t in terms if t]
-        if len(terms) == 1:
-            parts.append(f"content:{terms[0]}")
-        elif terms:
-            parts.append(" AND ".join(f"content:{t}" for t in terms))
+        # Web-search style: each word matches the file name (substring) OR the
+        # extracted content. Name is always indexed; content needs the server's
+        # Tika extractor. Multiple words are AND'd (more words = narrower).
+        clauses = [f"(name:*{t}* OR content:{t})" for t in terms]
+        if clauses:
+            parts.append(" AND ".join(clauses))
     if glob:
         # Allow glob chars (* ?) and common filename characters
         safe = re.sub(r"[^\w.*?\-/ ]", "", glob)
@@ -919,7 +921,7 @@ def _glob_via_search(
     }
 )
 def search(
-    pattern: Annotated[str, "Keywords to search file names and contents (full-text via Tika/KQL, NOT regex) — multiple words are AND'd, e.g. 'quarterly budget'"] = "",
+    pattern: Annotated[str, "Keywords to find files by name or content, like a web search (NOT regex). Each word matches the filename or the file's text; multiple words are AND'd, e.g. 'quarterly budget'"] = "",
     glob: Annotated[str, "Filename pattern filter, e.g. '*.pdf', 'report*', 'README'"] = "",
     path: Annotated[str, "Optional path prefix to scope results, e.g. '/Documents' — client-side filter"] = "",
     mediatype: Annotated[str, "Filter: document, spreadsheet, presentation, pdf, image, video, audio, folder, archive"] = "",
@@ -928,7 +930,7 @@ def search(
     limit: Annotated[int, "Max results (default 50, max 200)"] = 50,
     offset: Annotated[int, "Pagination offset — skip first N results"] = 0,
 ) -> list[dict] | str:
-    """Full-text and metadata search over files using OpenCloud's server-side search index (Tika). Keywords are AND'd and results are relevance-ranked — this is keyword search, NOT line-by-line regex like a code grep. Use glob for pure path/filename pattern discovery. At least one search param required (path alone is not sufficient)."""
+    """Search files via OpenCloud's server-side index, like a web search box: each keyword matches the file name or its text content, results are relevance-ranked. Keywords are AND'd. This is keyword/full-text search, NOT line-by-line regex like a code grep — use glob for exact path/filename pattern discovery. Content matching requires the server's Tika extractor; name matching always works. At least one search param required (path alone is not sufficient)."""
     try:
         if not any([pattern, glob, mediatype, modified_after, modified_before]):
             return format_error(

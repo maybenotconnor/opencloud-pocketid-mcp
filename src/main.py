@@ -23,7 +23,7 @@ mcp = FastMCP(
         "calendars/todos (CalDAV), and contacts (CardDAV). "
         "Tools are prefixed: webdav_, caldav_, carddav_. "
         "Use webdav_glob for pattern-based file discovery (e.g. '/Documents/**/*.pdf'). "
-        "Use webdav_search for full-text/keyword content search (Tika, relevance-ranked, NOT regex) with optional date filters. "
+        "Use webdav_search for web-search-style keyword search over file names and contents (relevance-ranked, NOT regex) with optional date filters. "
         "Use webdav_read_file to read files; images are returned as image content automatically. "
         "Use webdav_edit_file for targeted text edits; webdav_write_file for full rewrites. "
         "Use caldav_find_events and caldav_find_todos for calendar/task search. "
