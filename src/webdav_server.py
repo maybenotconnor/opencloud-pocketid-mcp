@@ -280,7 +280,7 @@ def glob(
     depth: Annotated[int, "Max recursion depth. 0 = unlimited, 1 = single directory only"] = 0,
     limit: Annotated[int, "Max results to return (default 100, max 500)"] = 100,
 ) -> list[dict] | str:
-    """Find files by path pattern. Pattern uses glob syntax — ** matches any depth, [..] char classes supported. Examples: /Documents/**/*.pdf, *.txt, **/*report*. Results are sorted most-recently-modified first. Drive-wide patterns (rooted at '/' with ** or basename-only) use the server search index; scoped patterns walk that subtree. Use grep for full-text content search."""
+    """Find files by path pattern. Pattern uses glob syntax — ** matches any depth, [..] char classes supported. Examples: /Documents/**/*.pdf, *.txt, **/*report*. Results are sorted most-recently-modified first. Drive-wide patterns (rooted at '/' with ** or basename-only) use the server search index; scoped patterns walk that subtree. Use search for full-text content search."""
     try:
         base_path = sanitize_path(_glob_base(pattern))
         client = _get_client()
@@ -383,7 +383,7 @@ def glob(
         elif budget_hit:
             results.append({
                 "note": f"Traversal stopped after {_WALK_DIR_BUDGET} directories — "
-                        "results may be incomplete. Narrow the path or use grep."
+                        "results may be incomplete. Narrow the path or use search."
             })
 
         return results
@@ -918,8 +918,8 @@ def _glob_via_search(
         "openWorldHint": True,
     }
 )
-def grep(
-    pattern: Annotated[str, "Keywords to search file contents (Tika/KQL, NOT regex) — multiple words are AND'd, e.g. 'quarterly budget'"] = "",
+def search(
+    pattern: Annotated[str, "Keywords to search file names and contents (full-text via Tika/KQL, NOT regex) — multiple words are AND'd, e.g. 'quarterly budget'"] = "",
     glob: Annotated[str, "Filename pattern filter, e.g. '*.pdf', 'report*', 'README'"] = "",
     path: Annotated[str, "Optional path prefix to scope results, e.g. '/Documents' — client-side filter"] = "",
     mediatype: Annotated[str, "Filter: document, spreadsheet, presentation, pdf, image, video, audio, folder, archive"] = "",
@@ -928,11 +928,11 @@ def grep(
     limit: Annotated[int, "Max results (default 50, max 200)"] = 50,
     offset: Annotated[int, "Pagination offset — skip first N results"] = 0,
 ) -> list[dict] | str:
-    """Search files using OpenCloud's server-side search index (Tika). Content words are AND'd for precise results. Use glob for pattern-based file discovery. At least one search param required (path alone is not sufficient)."""
+    """Full-text and metadata search over files using OpenCloud's server-side search index (Tika). Keywords are AND'd and results are relevance-ranked — this is keyword search, NOT line-by-line regex like a code grep. Use glob for pure path/filename pattern discovery. At least one search param required (path alone is not sufficient)."""
     try:
         if not any([pattern, glob, mediatype, modified_after, modified_before]):
             return format_error(
-                "grep",
+                "search",
                 "At least one search parameter (pattern, glob, mediatype, modified_after, modified_before) is required.",
             )
 
@@ -957,14 +957,14 @@ def grep(
         )
 
         if resp.status_code == 401:
-            return format_error("grep", "Authentication failed. Check credentials.")
+            return format_error("search", "Authentication failed. Check credentials.")
         if resp.status_code == 501:
             return format_error(
-                "grep",
+                "search",
                 "Server-side search is not available. The search index may not be configured.",
             )
         if resp.status_code != 207:
-            return format_error("grep", f"Unexpected response: HTTP {resp.status_code}")
+            return format_error("search", f"Unexpected response: HTTP {resp.status_code}")
 
         results = _parse_search_response(resp.text)
         if path:
@@ -973,4 +973,4 @@ def grep(
 
         return results
     except Exception as e:
-        return format_error("grep", str(e))
+        return format_error("search", str(e))

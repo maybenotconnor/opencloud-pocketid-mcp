@@ -20,7 +20,7 @@ from src.webdav_server import (
     edit_file,
     get_file_info,
     glob,
-    grep,
+    search,
     mkdir,
     move,
     read_file,
@@ -267,7 +267,7 @@ class TestGlobServerSearch:
 
     def test_deep_pattern_uses_index_not_walk(self, mock_client):
         self._mock_207()
-        result = glob("**/*[Hh]obb*")
+        glob("**/*[Hh]obb*")
         # Server search index was queried...
         assert self.mock_request.called
         body = self.mock_request.call_args.kwargs.get("content", "")
@@ -642,7 +642,7 @@ _SAMPLE_DIR_207 = """\
 </d:multistatus>"""
 
 
-class TestGrep:
+class TestSearch:
     @pytest.fixture(autouse=True)
     def mock_httpx(self):
         with patch("src.webdav_server.httpx.request") as mock_req:
@@ -657,7 +657,7 @@ class TestGrep:
 
     def test_content_search(self):
         self._mock_207()
-        result = grep(pattern="budget")
+        result = search(pattern="budget")
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["name"] == "report.pdf"
@@ -668,33 +668,33 @@ class TestGrep:
 
     def test_multi_word_content_uses_and(self):
         self._mock_207()
-        grep(pattern="quarterly budget")
+        search(pattern="quarterly budget")
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "content:quarterly AND content:budget" in body
 
     def test_glob_search(self):
         self._mock_207()
-        grep(glob="*.pdf")
+        search(glob="*.pdf")
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "name:*.pdf" in body
 
     def test_modified_after(self):
         self._mock_207()
-        grep(pattern="report", modified_after="2026-01-01")
+        search(pattern="report", modified_after="2026-01-01")
         body = self.mock_request.call_args.kwargs.get("content", "")
         # >= is XML-escaped to &gt;= in the body
         assert "mtime&gt;=2026-01-01" in body
 
     def test_modified_before(self):
         self._mock_207()
-        grep(pattern="report", modified_before="2026-12-31")
+        search(pattern="report", modified_before="2026-12-31")
         body = self.mock_request.call_args.kwargs.get("content", "")
         # <= is XML-escaped to &lt;= in the body
         assert "mtime&lt;=2026-12-31" in body
 
     def test_combined_params(self):
         self._mock_207()
-        grep(pattern="report", mediatype="pdf", modified_after="2026-01-01", modified_before="2026-06-30")
+        search(pattern="report", mediatype="pdf", modified_after="2026-01-01", modified_before="2026-06-30")
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "content:report" in body
         assert "mediatype:pdf" in body
@@ -703,24 +703,24 @@ class TestGrep:
 
     def test_cleans_space_href(self):
         self._mock_207()
-        result = grep(pattern="budget")
+        result = search(pattern="budget")
         assert result[0]["path"] == "/Documents/report.pdf"
         assert result[1]["path"] == "/Budget/2026.xlsx"
 
     def test_path_filter(self):
         self._mock_207()
-        result = grep(pattern="budget", path="/Documents")
+        result = search(pattern="budget", path="/Documents")
         assert len(result) == 1
         assert result[0]["path"] == "/Documents/report.pdf"
 
     def test_empty_params_returns_error(self):
-        result = grep()
+        result = search()
         assert isinstance(result, str)
         assert "Error" in result
         assert "At least one" in result
 
     def test_path_alone_not_sufficient(self):
-        result = grep(path="/Documents")
+        result = search(path="/Documents")
         assert "Error" in result
         assert "At least one" in result
 
@@ -728,7 +728,7 @@ class TestGrep:
         resp = MagicMock()
         resp.status_code = 500
         self.mock_request.return_value = resp
-        result = grep(pattern="test")
+        result = search(pattern="test")
         assert "Error" in result
         assert "500" in result
 
@@ -736,31 +736,31 @@ class TestGrep:
         resp = MagicMock()
         resp.status_code = 401
         self.mock_request.return_value = resp
-        result = grep(pattern="test")
+        result = search(pattern="test")
         assert "Authentication" in result
 
     def test_handles_501(self):
         resp = MagicMock()
         resp.status_code = 501
         self.mock_request.return_value = resp
-        result = grep(pattern="test")
+        result = search(pattern="test")
         assert "not available" in result
 
     def test_parses_directories(self):
         self._mock_207(xml=_SAMPLE_DIR_207)
-        result = grep(glob="Projects")
+        result = search(glob="Projects")
         assert len(result) == 1
         assert result[0]["type"] == "directory"
 
     def test_respects_limit(self):
         self._mock_207()
-        grep(pattern="budget", limit=300)
+        search(pattern="budget", limit=300)
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "<oc:limit>200</oc:limit>" in body
 
     def test_respects_limit_minimum(self):
         self._mock_207()
-        grep(pattern="budget", limit=0)
+        search(pattern="budget", limit=0)
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "<oc:limit>1</oc:limit>" in body
 

@@ -10,7 +10,7 @@ OpenCloud MCP provides 25 tools across three services: **WebDAV** (files), **Cal
 
 ## Discovery Tools
 
-Four flexible discovery tools share a consistent design: all parameters are optional, combine any filters you need. Additionally, `grep` provides fast server-side indexed search with full-text content support.
+Four flexible discovery tools share a consistent design: all parameters are optional, combine any filters you need. Additionally, `search` provides fast server-side indexed search with full-text content support.
 
 ### webdav_glob
 Find files and directories by glob pattern. The pattern embeds both path and filename — use `**` for any depth.
@@ -26,23 +26,23 @@ Find files and directories by glob pattern. The pattern embeds both path and fil
 | Recent Python files | `glob(pattern="/Projects/**/*.py", modified_after="2026-03-01")` |
 | Shallow listing | `glob(pattern="/Photos/*.jpg", depth=1)` |
 
-### webdav_grep
-Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika). Faster than `glob` for large file trees. Multi-word `pattern` terms are AND'd automatically. At least one param required (`path` alone is not sufficient). Note: unlike the built-in Grep tool, `pattern` is plain keywords (not a regex) — use `glob` for filename patterns and `path` to scope results to a directory.
+### webdav_search
+Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika) and is relevance-ranked. Faster than `glob` for large file trees. Multi-word `pattern` terms are AND'd automatically. At least one param required (`path` alone is not sufficient). Note: this is keyword/full-text search, **not** a line-by-line regex like the built-in Grep tool — `pattern` is plain keywords, so use `glob` for filename patterns and `path` to scope results to a directory.
 
 | Use case | Parameters |
 |---|---|
-| Content search (single term) | `grep(pattern="report")` |
-| Content search (multi-word AND) | `grep(pattern="quarterly budget")` |
-| Find by name pattern | `grep(glob="*.pdf")` |
-| Scoped to a directory | `grep(pattern="budget", path="/Finance")` |
-| Find by media type | `grep(mediatype="image")` |
-| Documents modified after date | `grep(mediatype="document", modified_after="2026-03-01")` |
-| Combined filters | `grep(pattern="budget", mediatype="spreadsheet")` |
-| Date range | `grep(pattern="report", modified_after="2026-01-01", modified_before="2026-12-31")` |
-| Paginated results | `grep(glob="*.txt", limit=20, offset=40)` |
+| Content search (single term) | `search(pattern="report")` |
+| Content search (multi-word AND) | `search(pattern="quarterly budget")` |
+| Find by name pattern | `search(glob="*.pdf")` |
+| Scoped to a directory | `search(pattern="budget", path="/Finance")` |
+| Find by media type | `search(mediatype="image")` |
+| Documents modified after date | `search(mediatype="document", modified_after="2026-03-01")` |
+| Combined filters | `search(pattern="budget", mediatype="spreadsheet")` |
+| Date range | `search(pattern="report", modified_after="2026-01-01", modified_before="2026-12-31")` |
+| Paginated results | `search(glob="*.txt", limit=20, offset=40)` |
 
-> **When to use `grep` vs `glob`:**
-> - `grep` — fast server-side indexed search, supports content search inside files, best for large trees
+> **When to use `search` vs `glob`:**
+> - `search` — fast server-side indexed search, supports content search inside files, best for large trees
 > - `glob` — client-side recursive walk, supports exact date filters and depth control, works without search index
 
 ### caldav_find_events
@@ -114,7 +114,7 @@ Find contacts with optional text search. Omit `query` to list all, provide it to
 
 ## Tips
 
-- Always use discovery tools (`glob`, `grep`, `find_events`, `find_todos`, `find_contacts`) before CRUD operations — get UIDs from results
+- Always use discovery tools (`glob`, `search`, `find_events`, `find_todos`, `find_contacts`) before CRUD operations — get UIDs from results
 - Calendar and addressbook names are case-insensitive (e.g., "personal" matches "Personal")
 - Date parameters accept ISO 8601 format: `"2026-03-05"` or `"2026-03-05T14:00"`
 - The `updates` parameter on update tools is a dict — only include fields you want to change
