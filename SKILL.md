@@ -27,19 +27,19 @@ Find files and directories by glob pattern. The pattern embeds both path and fil
 | Shallow listing | `glob(pattern="/Photos/*.jpg", depth=1)` |
 
 ### webdav_search
-Server-side indexed search using OpenCloud's search engine. Supports full-text content search (requires Tika) and is relevance-ranked. Faster than `glob` for large file trees. Multi-word `pattern` terms are AND'd automatically. At least one param required (`path` alone is not sufficient). Note: this is keyword/full-text search, **not** a line-by-line regex like the built-in Grep tool — `pattern` is plain keywords, so use `glob` for filename patterns and `path` to scope results to a directory.
+Server-side indexed search using OpenCloud's search engine, like a web search box. Each `pattern` keyword matches the file name or its text content (content requires Tika); keywords are OR'd and results are relevance-ranked, so files matching more keywords float to the top and over-listing words broadens rather than empties the results. Faster than the `glob` tool for large file trees. At least one param required (`path` alone is not sufficient). Note: this is keyword/full-text search, **not** a line-by-line regex like the built-in Grep tool. Use `filename` for a hard name filter (e.g. `*.pdf`), the `glob` tool for exact path-pattern discovery, and `path` to scope results to a directory.
 
 | Use case | Parameters |
 |---|---|
-| Content search (single term) | `search(pattern="report")` |
-| Content search (multi-word AND) | `search(pattern="quarterly budget")` |
-| Find by name pattern | `search(glob="*.pdf")` |
+| Keyword search (single term) | `search(pattern="report")` |
+| Keyword search (multi-word, ranked) | `search(pattern="quarterly budget")` |
+| Restrict to a filename pattern | `search(filename="*.pdf")` |
 | Scoped to a directory | `search(pattern="budget", path="/Finance")` |
 | Find by media type | `search(mediatype="image")` |
 | Documents modified after date | `search(mediatype="document", modified_after="2026-03-01")` |
 | Combined filters | `search(pattern="budget", mediatype="spreadsheet")` |
 | Date range | `search(pattern="report", modified_after="2026-01-01", modified_before="2026-12-31")` |
-| Paginated results | `search(glob="*.txt", limit=20, offset=40)` |
+| Paginated results | `search(filename="*.txt", limit=20, offset=40)` |
 
 > **When to use `search` vs `glob`:**
 > - `search` — fast server-side indexed search, supports content search inside files, best for large trees

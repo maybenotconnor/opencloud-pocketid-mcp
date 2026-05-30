@@ -666,15 +666,15 @@ class TestSearch:
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "(name:*budget* OR content:budget)" in body
 
-    def test_multi_word_content_uses_and(self):
+    def test_multi_word_keywords_ored(self):
         self._mock_207()
         search(pattern="quarterly budget")
         body = self.mock_request.call_args.kwargs.get("content", "")
-        assert "(name:*quarterly* OR content:quarterly) AND (name:*budget* OR content:budget)" in body
+        assert "((name:*quarterly* OR content:quarterly) OR (name:*budget* OR content:budget))" in body
 
-    def test_glob_search(self):
+    def test_filename_filter(self):
         self._mock_207()
-        search(glob="*.pdf")
+        search(filename="*.pdf")
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "name:*.pdf" in body
 
@@ -748,7 +748,7 @@ class TestSearch:
 
     def test_parses_directories(self):
         self._mock_207(xml=_SAMPLE_DIR_207)
-        result = search(glob="Projects")
+        result = search(filename="Projects")
         assert len(result) == 1
         assert result[0]["type"] == "directory"
 
@@ -769,16 +769,16 @@ class TestBuildKql:
     def test_single_term_matches_name_or_content(self):
         assert _build_kql("budget", "", "", "", "") == "(name:*budget* OR content:budget)"
 
-    def test_multi_word_terms_anded(self):
+    def test_multi_word_terms_ored_and_grouped(self):
         assert _build_kql("quarterly budget", "", "", "", "") == (
-            "(name:*quarterly* OR content:quarterly) AND (name:*budget* OR content:budget)"
+            "((name:*quarterly* OR content:quarterly) OR (name:*budget* OR content:budget))"
         )
 
-    def test_three_word_terms_anded(self):
+    def test_three_word_terms_ored_and_grouped(self):
         result = _build_kql("q4 financial report", "", "", "", "")
         assert result == (
-            "(name:*q4* OR content:q4) AND (name:*financial* OR content:financial) "
-            "AND (name:*report* OR content:report)"
+            "((name:*q4* OR content:q4) OR (name:*financial* OR content:financial) "
+            "OR (name:*report* OR content:report))"
         )
 
     def test_single_name(self):

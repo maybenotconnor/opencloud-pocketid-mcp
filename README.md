@@ -141,7 +141,7 @@ This also works with **Claude Code** -- it supports remote MCP servers with OAut
 | Tool | Description |
 |------|-------------|
 | `webdav_glob` | Find files by glob pattern (e.g. `/Documents/**/*.pdf`); supports `**` for any depth |
-| `webdav_search` | Server-side indexed search with full-text content support (Tika); keyword/relevance-ranked (not regex), multi-word terms are AND'd |
+| `webdav_search` | Web-search-style server-side index search over file names and contents (Tika); keywords are OR'd and results are relevance-ranked (not regex) |
 | `webdav_read_file` | Read a file: text (max 1MB), images (auto-detected, returned as image content), binary with `binary=True` (max 5MB) |
 | `webdav_edit_file` | Targeted text edit — replaces an exact string once; fails if not found or ambiguous |
 | `webdav_write_file` | Write text to a file (auto-creates parent dirs, overwrites) |

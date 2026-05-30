@@ -700,7 +700,7 @@ def get_file_info(
 
 def _build_kql(
     pattern: str,
-    glob: str,
+    filename: str,
     mediatype: str,
     modified_after: str,
     modified_before: str,
@@ -717,13 +717,17 @@ def _build_kql(
         terms = [t for t in terms if t]
         # Web-search style: each word matches the file name (substring) OR the
         # extracted content. Name is always indexed; content needs the server's
-        # Tika extractor. Multiple words are AND'd (more words = narrower).
+        # Tika extractor. Words are OR'd so over-listing keywords doesn't collapse
+        # to zero results — relevance ranking floats all-term matches to the top.
         clauses = [f"(name:*{t}* OR content:{t})" for t in terms]
         if clauses:
-            parts.append(" AND ".join(clauses))
-    if glob:
+            group = " OR ".join(clauses)
+            if len(clauses) > 1:
+                group = f"({group})"
+            parts.append(group)
+    if filename:
         # Allow glob chars (* ?) and common filename characters
-        safe = re.sub(r"[^\w.*?\-/ ]", "", glob)
+        safe = re.sub(r"[^\w.*?\-/ ]", "", filename)
         if safe:
             parts.append(f"name:{safe}")
     if mediatype:
@@ -921,8 +925,8 @@ def _glob_via_search(
     }
 )
 def search(
-    pattern: Annotated[str, "Keywords to find files by name or content, like a web search (NOT regex). Each word matches the filename or the file's text; multiple words are AND'd, e.g. 'quarterly budget'"] = "",
-    glob: Annotated[str, "Filename pattern filter, e.g. '*.pdf', 'report*', 'README'"] = "",
+    pattern: Annotated[str, "Keywords to find files by name or content, like a web search (NOT regex). Each word matches the filename or the file's text; words are OR'd and results are ranked by relevance (files matching more words rank higher), e.g. 'quarterly budget'"] = "",
+    filename: Annotated[str, "Hard filename filter (glob syntax), e.g. '*.pdf', 'report*', 'README' — restricts results to names matching this, then ranks by pattern"] = "",
     path: Annotated[str, "Optional path prefix to scope results, e.g. '/Documents' — client-side filter"] = "",
     mediatype: Annotated[str, "Filter: document, spreadsheet, presentation, pdf, image, video, audio, folder, archive"] = "",
     modified_after: Annotated[str, "Only files modified on or after this date (ISO 8601), e.g. '2026-01-01'"] = "",
@@ -930,15 +934,15 @@ def search(
     limit: Annotated[int, "Max results (default 50, max 200)"] = 50,
     offset: Annotated[int, "Pagination offset — skip first N results"] = 0,
 ) -> list[dict] | str:
-    """Search files via OpenCloud's server-side index, like a web search box: each keyword matches the file name or its text content, results are relevance-ranked. Keywords are AND'd. This is keyword/full-text search, NOT line-by-line regex like a code grep — use glob for exact path/filename pattern discovery. Content matching requires the server's Tika extractor; name matching always works. At least one search param required (path alone is not sufficient)."""
+    """Search files via OpenCloud's server-side index, like a web search box: each keyword matches the file name or its text content, and results are ranked by relevance (files matching more keywords rank higher). Keywords are OR'd, so listing extra words broadens rather than empties the results. This is keyword/full-text search, NOT line-by-line regex like a code grep — use the glob tool for exact path/filename pattern discovery. Content matching requires the server's Tika extractor; name matching always works. At least one search param required (path alone is not sufficient)."""
     try:
-        if not any([pattern, glob, mediatype, modified_after, modified_before]):
+        if not any([pattern, filename, mediatype, modified_after, modified_before]):
             return format_error(
                 "search",
-                "At least one search parameter (pattern, glob, mediatype, modified_after, modified_before) is required.",
+                "At least one search parameter (pattern, filename, mediatype, modified_after, modified_before) is required.",
             )
 
-        kql = _build_kql(pattern, glob, mediatype, modified_after, modified_before)
+        kql = _build_kql(pattern, filename, mediatype, modified_after, modified_before)
         limit = min(max(limit, 1), 200)
         offset = max(offset, 0)
 
