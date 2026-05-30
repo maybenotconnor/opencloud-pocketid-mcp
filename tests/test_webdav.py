@@ -6,7 +6,9 @@ import pytest
 from mcp.types import ImageContent
 
 from src.webdav_server import (
+    _WALK_DIR_BUDGET,
     _build_kql,
+    _expand_braces,
     _glob_base,
     _glob_can_descend,
     _glob_match,
