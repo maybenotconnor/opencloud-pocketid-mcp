@@ -141,15 +141,15 @@ This also works with **Claude Code** -- it supports remote MCP servers with OAut
 | Tool | Description |
 |------|-------------|
 | `webdav_glob` | Find files by glob pattern (e.g. `/Documents/**/*.pdf`); supports `**` for any depth |
-| `webdav_search` | Web-search-style server-side index search over file names and contents (Tika); keywords are OR'd and results are relevance-ranked (not regex) |
-| `webdav_read_file` | Read a file: text (max 1MB), images (auto-detected, returned as image content), binary with `binary=True` (max 5MB) |
+| `webdav_search` | Search files like a search engine via OpenCloud's server-side index; `query` keywords match name + content (Tika), OR'd and relevance-ranked (not regex). Results include created/modified (ISO 8601) |
+| `webdav_read_file` | Read a file: text (max 1MB), images (auto-detected, returned as image content), binary with `binary=True` (max 5MB). Prefixes a metadata block (size, created, modified) |
 | `webdav_edit_file` | Targeted text edit — replaces an exact string once; fails if not found or ambiguous |
 | `webdav_write_file` | Write text to a file (auto-creates parent dirs, overwrites) |
 | `webdav_mkdir` | Create a directory (idempotent) |
 | `webdav_delete` | Delete a file or directory |
 | `webdav_move` | Move or rename a file/directory |
 | `webdav_copy` | Copy a file or directory |
-| `webdav_get_file_info` | Get metadata (size, modified, etag, content type) |
+| `webdav_get_file_info` | Get metadata (size, created, modified, etag, content type) |
 
 ### CalDAV -- Calendar and Todos (9 tools)
 

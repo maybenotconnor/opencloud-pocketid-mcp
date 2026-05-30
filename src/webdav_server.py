@@ -14,7 +14,7 @@ from urllib.parse import unquote
 
 import httpx
 from fastmcp import FastMCP
-from mcp.types import ImageContent
+from mcp.types import ImageContent, TextContent
 from webdav4.client import Client as WebDAVClient, ResourceAlreadyExists
 
 from src.config import settings
@@ -266,6 +266,52 @@ def _to_dt(value: str) -> datetime:
     return datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _iso(value: object) -> str:
+    """Render a timestamp as an ISO 8601 string, or "" if empty/unparseable.
+
+    Accepts a datetime or a date string (ISO 8601 or RFC 1123 / HTTP). Used to
+    give search, read_file, and get_file_info one consistent timestamp format.
+    """
+    if not value:
+        return ""
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        for parse in (datetime.fromisoformat, parsedate_to_datetime):
+            try:
+                dt = parse(value)  # type: ignore[arg-type]
+                break
+            except (ValueError, TypeError):
+                continue
+        else:
+            return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _human_size(n: int) -> str:
+    """Render a byte count as a short human-readable size, e.g. '12.3 KB'."""
+    size = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def _meta_block(info: dict) -> TextContent:
+    """Build a one-line metadata block (size, created, modified) for a read file."""
+    parts = [f"Size: {_human_size(info.get('content_length', 0))}"]
+    created = _iso(info.get("created"))
+    modified = _iso(info.get("modified"))
+    if created:
+        parts.append(f"Created: {created}")
+    if modified:
+        parts.append(f"Modified: {modified}")
+    return TextContent(type="text", text=" · ".join(parts))
+
+
 @webdav_server.tool(
     annotations={
         "readOnlyHint": True,
@@ -403,8 +449,8 @@ def glob(
 def read_file(
     path: Annotated[str, "Path to the file to read, e.g. '/Documents/notes.txt'"],
     binary: Annotated[bool, "Return base64-encoded content for non-image binary files"] = False,
-) -> str | ImageContent:
-    """Read a file's content. Text files returned as string (max 1MB). Images returned as image content automatically. Other binary files require binary=True for base64 (max 5MB)."""
+) -> str | list[TextContent | ImageContent]:
+    """Read a file's content. Returns a metadata block (size, created, modified) followed by the content: text as a string (max 1MB), images as image content automatically, other binary files as base64 with binary=True (max 5MB)."""
     try:
         path = sanitize_path(path)
         client = _get_client()
@@ -412,6 +458,7 @@ def read_file(
         info = client.info(path)
         size = info.get("content_length", 0)
         mime = (info.get("content_type") or "").lower()
+        meta = _meta_block(info)
 
         # Images: return as multimodal image content
         if mime.startswith("image/"):
@@ -424,11 +471,14 @@ def read_file(
                 client.download_file(path, tmp.name)
                 with open(tmp.name, "rb") as f:
                     data = f.read()
-            return ImageContent(
-                type="image",
-                data=base64.b64encode(data).decode("ascii"),
-                mimeType=mime,
-            )
+            return [
+                meta,
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(data).decode("ascii"),
+                    mimeType=mime,
+                ),
+            ]
 
         # Binary mode: return base64
         if binary:
@@ -441,7 +491,7 @@ def read_file(
                 client.download_file(path, tmp.name)
                 with open(tmp.name, "rb") as f:
                     data = f.read()
-            return base64.b64encode(data).decode("ascii")
+            return [meta, TextContent(type="text", text=base64.b64encode(data).decode("ascii"))]
 
         # Text mode
         if size and size > 1_048_576:
@@ -462,7 +512,7 @@ def read_file(
                         "Images are returned automatically; use binary=True for other binary files.",
                     )
             with open(tmp.name, "r", encoding="utf-8") as f:
-                return f.read()
+                return [meta, TextContent(type="text", text=f.read())]
     except ValueError as e:
         return format_error("read_file", str(e))
     except UnicodeDecodeError:
@@ -684,11 +734,12 @@ def get_file_info(
         info = client.info(path)
         return {
             "path": path,
+            "type": "directory" if info.get("type") == "directory" else "file",
             "size": info.get("content_length", 0),
-            "modified": info.get("modified", ""),
+            "created": _iso(info.get("created")),
+            "modified": _iso(info.get("modified")),
             "etag": info.get("etag", ""),
             "content_type": info.get("content_type", ""),
-            "type": "directory" if info.get("type") == "directory" else "file",
         }
     except ValueError as e:
         return format_error("get_file_info", str(e))
@@ -793,8 +844,8 @@ def _parse_search_response(xml_text: str) -> list[dict]:
         m = re.search(r"<(?:\w+:)?getlastmodified>(.*?)</(?:\w+:)?getlastmodified>", block)
         entry["modified"] = m.group(1) if m else ""
 
-        m = re.search(r"<(?:\w+:)?getcontenttype>(.*?)</(?:\w+:)?getcontenttype>", block)
-        entry["content_type"] = m.group(1) if m else ""
+        m = re.search(r"<(?:\w+:)?creationdate>(.*?)</(?:\w+:)?creationdate>", block)
+        entry["created"] = m.group(1) if m else ""
 
         m = re.search(r"<oc:score>(.*?)</oc:score>", block)
         entry["score"] = float(m.group(1)) if m else 0.0
@@ -925,31 +976,30 @@ def _glob_via_search(
     }
 )
 def search(
-    pattern: Annotated[str, "Keywords to find files by name or content, like a web search (NOT regex). Each word matches the filename or the file's text; words are OR'd and results are ranked by relevance (files matching more words rank higher), e.g. 'quarterly budget'"] = "",
-    filename: Annotated[str, "Hard filename filter (glob syntax), e.g. '*.pdf', 'report*', 'README' — restricts results to names matching this, then ranks by pattern"] = "",
-    path: Annotated[str, "Optional path prefix to scope results, e.g. '/Documents' — client-side filter"] = "",
-    mediatype: Annotated[str, "Filter: document, spreadsheet, presentation, pdf, image, video, audio, folder, archive"] = "",
-    modified_after: Annotated[str, "Only files modified on or after this date (ISO 8601), e.g. '2026-01-01'"] = "",
-    modified_before: Annotated[str, "Only files modified on or before this date (ISO 8601), e.g. '2026-12-31'"] = "",
+    query: Annotated[str, "What to search for, in plain keywords like a search engine (NOT regex). Each word matches a file's name or its text content; words are OR'd and results are ranked by relevance, so files matching more words rank first. e.g. 'quarterly budget 2026'"] = "",
+    path: Annotated[str, "Optional: limit results to this folder, e.g. '/Documents'"] = "",
+    mediatype: Annotated[str, "Optional file-type filter: document, spreadsheet, presentation, pdf, image, video, audio, folder, archive"] = "",
+    modified_after: Annotated[str, "Optional: only files modified on or after this date (ISO 8601), e.g. '2026-01-01'"] = "",
+    modified_before: Annotated[str, "Optional: only files modified on or before this date (ISO 8601), e.g. '2026-12-31'"] = "",
     limit: Annotated[int, "Max results (default 50, max 200)"] = 50,
-    offset: Annotated[int, "Pagination offset — skip first N results"] = 0,
 ) -> list[dict] | str:
-    """Search files via OpenCloud's server-side index, like a web search box: each keyword matches the file name or its text content, and results are ranked by relevance (files matching more keywords rank higher). Keywords are OR'd, so listing extra words broadens rather than empties the results. This is keyword/full-text search, NOT line-by-line regex like a code grep — use the glob tool for exact path/filename pattern discovery. Content matching requires the server's Tika extractor; name matching always works. At least one search param required (path alone is not sufficient)."""
+    """Search your files like a search engine. Give plain keywords in `query`; results come back ranked by relevance (files matching more keywords rank higher), each with its path, type, size, and modified date. Every keyword matches a file's name or its text content, and keywords are OR'd — so listing extra words broadens the search rather than emptying it. Keywords, not regex: for exact filename or path patterns use the glob tool instead. Content matching needs the server's Tika extractor; name matching always works. Optionally narrow by folder (path), file type (mediatype), or modified date. At least one of query/mediatype/modified_after/modified_before is required (path alone is not sufficient)."""
     try:
-        if not any([pattern, filename, mediatype, modified_after, modified_before]):
+        if not any([query, mediatype, modified_after, modified_before]):
             return format_error(
                 "search",
-                "At least one search parameter (pattern, filename, mediatype, modified_after, modified_before) is required.",
+                "At least one of query, mediatype, modified_after, or modified_before is required.",
             )
 
-        kql = _build_kql(pattern, filename, mediatype, modified_after, modified_before)
+        # The empty arg is the internal name-glob filter (used by the glob tool,
+        # not exposed on this search surface).
+        kql = _build_kql(query, "", mediatype, modified_after, modified_before)
         limit = min(max(limit, 1), 200)
-        offset = max(offset, 0)
 
         body = _SEARCH_XML_TEMPLATE.format(
             query=_xml_escape(kql),
             limit=limit,
-            offset=offset,
+            offset=0,
         )
 
         resp = httpx.request(
@@ -977,6 +1027,17 @@ def search(
             results = [r for r in results if r.get("path", "").startswith(path)]
         results.sort(key=lambda r: r.get("score", 0), reverse=True)
 
-        return results
+        return [
+            {
+                "name": r.get("name", ""),
+                "path": r.get("path", ""),
+                "type": r.get("type", "file"),
+                "size": r.get("size", 0),
+                "created": _iso(r.get("created", "")),
+                "modified": _iso(r.get("modified", "")),
+                "score": r.get("score", 0.0),
+            }
+            for r in results
+        ]
     except Exception as e:
         return format_error("search", str(e))

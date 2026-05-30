@@ -27,19 +27,18 @@ Find files and directories by glob pattern. The pattern embeds both path and fil
 | Shallow listing | `glob(pattern="/Photos/*.jpg", depth=1)` |
 
 ### webdav_search
-Server-side indexed search using OpenCloud's search engine, like a web search box. Each `pattern` keyword matches the file name or its text content (content requires Tika); keywords are OR'd and results are relevance-ranked, so files matching more keywords float to the top and over-listing words broadens rather than empties the results. Faster than the `glob` tool for large file trees. At least one param required (`path` alone is not sufficient). Note: this is keyword/full-text search, **not** a line-by-line regex like the built-in Grep tool. Use `filename` for a hard name filter (e.g. `*.pdf`), the `glob` tool for exact path-pattern discovery, and `path` to scope results to a directory.
+Search your files like a search engine, using OpenCloud's server-side index. Each `query` keyword matches a file's name or its text content (content requires Tika); keywords are OR'd and results are relevance-ranked, so files matching more keywords float to the top and over-listing words broadens rather than empties the search. Faster than the `glob` tool for large file trees. Results carry `name`, `path`, `type`, `size`, `created`, `modified` (ISO 8601), and `score`. At least one of `query`/`mediatype`/`modified_after`/`modified_before` is required (`path` alone is not sufficient). Note: this is keyword search, **not** a line-by-line regex like the built-in Grep tool — for exact filename/path patterns use the `glob` tool.
 
 | Use case | Parameters |
 |---|---|
-| Keyword search (single term) | `search(pattern="report")` |
-| Keyword search (multi-word, ranked) | `search(pattern="quarterly budget")` |
-| Restrict to a filename pattern | `search(filename="*.pdf")` |
-| Scoped to a directory | `search(pattern="budget", path="/Finance")` |
+| Keyword search (single term) | `search(query="report")` |
+| Keyword search (multi-word, ranked) | `search(query="quarterly budget")` |
+| Scoped to a directory | `search(query="budget", path="/Finance")` |
 | Find by media type | `search(mediatype="image")` |
 | Documents modified after date | `search(mediatype="document", modified_after="2026-03-01")` |
-| Combined filters | `search(pattern="budget", mediatype="spreadsheet")` |
-| Date range | `search(pattern="report", modified_after="2026-01-01", modified_before="2026-12-31")` |
-| Paginated results | `search(filename="*.txt", limit=20, offset=40)` |
+| Combined filters | `search(query="budget", mediatype="spreadsheet")` |
+| Date range | `search(query="report", modified_after="2026-01-01", modified_before="2026-12-31")` |
+| Cap results | `search(query="invoice", limit=20)` |
 
 > **When to use `search` vs `glob`:**
 > - `search` — fast server-side indexed search, supports content search inside files, best for large trees
@@ -82,10 +81,11 @@ Find contacts with optional text search. Omit `query` to list all, provide it to
 - **Read text**: `webdav_read_file(path="/file.txt")` — max 1MB, UTF-8 text
 - **Read image**: `webdav_read_file(path="/photo.png")` — images auto-detected, returned as image content
 - **Read binary**: `webdav_read_file(path="/archive.zip", binary=True)` — returns base64, max 5MB
+- Every read is preceded by a metadata line (`Size · Created · Modified`, ISO 8601) before the content
 - **Edit text file**: `webdav_edit_file(path="/file.txt", old_str="...", new_str="...")` — exact-match replace; fails if not found or matches >1 time
 - **Write file**: `webdav_write_file(path="/file.txt", content="...")` — creates parent dirs, overwrites
 - **Create directory**: `webdav_mkdir(path="/new-folder")`
-- **Get metadata**: `webdav_get_file_info(path="/file.txt")` — size, modified date, content type
+- **Get metadata**: `webdav_get_file_info(path="/file.txt")` — size, created + modified dates (ISO 8601), content type, etag
 - **Copy**: `webdav_copy(source="/a.txt", dest="/b.txt")`
 - **Move/rename**: `webdav_move(source="/old.txt", dest="/new.txt")`
 - **Delete**: `webdav_delete(path="/file.txt")` — works on files and directories
