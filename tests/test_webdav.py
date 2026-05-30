@@ -1,9 +1,10 @@
 """Tests for WebDAV tools — uses mocks for the webdav4 client."""
 
+import base64
 from unittest.mock import MagicMock, patch
 
 import pytest
-from mcp.types import ImageContent
+from mcp.types import ImageContent, TextContent
 
 from src.webdav_server import (
     _WALK_DIR_BUDGET,
@@ -20,10 +21,10 @@ from src.webdav_server import (
     edit_file,
     get_file_info,
     glob,
-    grep,
     mkdir,
     move,
     read_file,
+    search,
     write_file,
 )
 
@@ -267,7 +268,7 @@ class TestGlobServerSearch:
 
     def test_deep_pattern_uses_index_not_walk(self, mock_client):
         self._mock_207()
-        result = glob("**/*[Hh]obb*")
+        glob("**/*[Hh]obb*")
         # Server search index was queried...
         assert self.mock_request.called
         body = self.mock_request.call_args.kwargs.get("content", "")
@@ -460,8 +461,13 @@ class TestReadFile:
         result = read_file("/../etc/passwd")
         assert "Error" in result
 
-    def test_image_returns_image_content(self, mock_client):
-        mock_client.info.return_value = {"content_length": 1024, "content_type": "image/jpeg"}
+    def test_image_returns_metadata_and_image_content(self, mock_client):
+        mock_client.info.return_value = {
+            "content_length": 1024,
+            "content_type": "image/jpeg",
+            "created": "2026-01-02T09:30:00Z",
+            "modified": "Mon, 10 Mar 2026 12:00:00 GMT",
+        }
         with patch("src.webdav_server.tempfile.NamedTemporaryFile") as mock_tmp, \
              patch("builtins.open", create=True) as mock_open:
             mock_tmp.return_value.__enter__ = lambda s: s
@@ -471,10 +477,16 @@ class TestReadFile:
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             mock_open.return_value.read.return_value = b"\xff\xd8\xff"
             result = read_file("/photo.jpg")
-        assert isinstance(result, ImageContent)
-        assert result.mimeType == "image/jpeg"
+        assert isinstance(result, list)
+        # First block is the metadata, second is the image.
+        assert isinstance(result[0], TextContent)
+        assert "Size: 1.0 KB" in result[0].text
+        assert "Created: 2026-01-02T09:30:00+00:00" in result[0].text
+        assert "Modified: 2026-03-10T12:00:00+00:00" in result[0].text
+        assert isinstance(result[1], ImageContent)
+        assert result[1].mimeType == "image/jpeg"
 
-    def test_binary_flag_returns_string(self, mock_client):
+    def test_binary_flag_returns_metadata_and_base64(self, mock_client):
         mock_client.info.return_value = {"content_length": 100, "content_type": "application/zip"}
         with patch("src.webdav_server.tempfile.NamedTemporaryFile") as mock_tmp, \
              patch("builtins.open", create=True) as mock_open:
@@ -485,7 +497,33 @@ class TestReadFile:
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             mock_open.return_value.read.return_value = b"\x00\x01\x02"
             result = read_file("/archive.zip", binary=True)
-        assert isinstance(result, str)
+        assert isinstance(result, list)
+        assert isinstance(result[0], TextContent)
+        assert "Size: 100 B" in result[0].text
+        assert isinstance(result[1], TextContent)
+        assert result[1].text == base64.b64encode(b"\x00\x01\x02").decode("ascii")
+
+    def test_text_returns_metadata_and_content(self, mock_client):
+        mock_client.info.return_value = {
+            "content_length": 11,
+            "content_type": "text/plain",
+            "modified": "Mon, 10 Mar 2026 12:00:00 GMT",
+        }
+        with patch("src.webdav_server.tempfile.NamedTemporaryFile") as mock_tmp, \
+             patch("builtins.open", create=True) as mock_open:
+            mock_tmp.return_value.__enter__ = lambda s: s
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            mock_tmp.return_value.name = "/tmp/fake"
+            mock_open.return_value.__enter__ = lambda s: s
+            mock_open.return_value.__exit__ = MagicMock(return_value=False)
+            # First read() is the binary null-byte sniff, second is the text content.
+            mock_open.return_value.read.side_effect = [b"hello world", "hello world"]
+            result = read_file("/notes.txt")
+        assert isinstance(result, list)
+        assert isinstance(result[0], TextContent)
+        assert "Created:" not in result[0].text  # no creationdate provided
+        assert "Modified: 2026-03-10T12:00:00+00:00" in result[0].text
+        assert result[1].text == "hello world"
 
 
 class TestEditFile:
@@ -581,6 +619,7 @@ class TestGetFileInfo:
     def test_returns_metadata(self, mock_client):
         mock_client.info.return_value = {
             "content_length": 512,
+            "created": "2026-01-15",
             "modified": "2026-03-01",
             "etag": '"abc123"',
             "content_type": "text/plain",
@@ -590,6 +629,14 @@ class TestGetFileInfo:
         assert isinstance(result, dict)
         assert result["size"] == 512
         assert result["content_type"] == "text/plain"
+        # Timestamps are normalized to ISO 8601.
+        assert result["created"] == "2026-01-15T00:00:00+00:00"
+        assert result["modified"] == "2026-03-01T00:00:00+00:00"
+
+    def test_created_blank_when_absent(self, mock_client):
+        mock_client.info.return_value = {"content_length": 1, "modified": "2026-03-01", "type": "file"}
+        result = get_file_info("/notes.txt")
+        assert result["created"] == ""
 
 
 # --- Server-side search tests ---
@@ -604,6 +651,7 @@ _SAMPLE_207 = """\
         <oc:name>report.pdf</oc:name>
         <d:resourcetype/>
         <d:getcontentlength>204800</d:getcontentlength>
+        <d:creationdate>2026-01-02T09:30:00Z</d:creationdate>
         <d:getlastmodified>Mon, 10 Mar 2026 12:00:00 GMT</d:getlastmodified>
         <d:getcontenttype>application/pdf</d:getcontenttype>
         <oc:score>0.85</oc:score>
@@ -642,7 +690,7 @@ _SAMPLE_DIR_207 = """\
 </d:multistatus>"""
 
 
-class TestGrep:
+class TestSearch:
     @pytest.fixture(autouse=True)
     def mock_httpx(self):
         with patch("src.webdav_server.httpx.request") as mock_req:
@@ -657,70 +705,64 @@ class TestGrep:
 
     def test_content_search(self):
         self._mock_207()
-        result = grep(pattern="budget")
+        result = search(query="budget")
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["name"] == "report.pdf"
         assert result[0]["score"] == 0.85
         assert result[1]["name"] == "2026.xlsx"
         body = self.mock_request.call_args.kwargs.get("content", "")
-        assert "content:budget" in body
+        assert "(name:*budget* OR content:budget)" in body
 
-    def test_multi_word_content_uses_and(self):
+    def test_multi_word_keywords_ored(self):
         self._mock_207()
-        grep(pattern="quarterly budget")
+        search(query="quarterly budget")
         body = self.mock_request.call_args.kwargs.get("content", "")
-        assert "content:quarterly AND content:budget" in body
-
-    def test_glob_search(self):
-        self._mock_207()
-        grep(glob="*.pdf")
-        body = self.mock_request.call_args.kwargs.get("content", "")
-        assert "name:*.pdf" in body
+        assert "((name:*quarterly* OR content:quarterly) OR (name:*budget* OR content:budget))" in body
 
     def test_modified_after(self):
         self._mock_207()
-        grep(pattern="report", modified_after="2026-01-01")
+        search(query="report", modified_after="2026-01-01")
         body = self.mock_request.call_args.kwargs.get("content", "")
         # >= is XML-escaped to &gt;= in the body
         assert "mtime&gt;=2026-01-01" in body
 
     def test_modified_before(self):
         self._mock_207()
-        grep(pattern="report", modified_before="2026-12-31")
+        search(query="report", modified_before="2026-12-31")
         body = self.mock_request.call_args.kwargs.get("content", "")
         # <= is XML-escaped to &lt;= in the body
         assert "mtime&lt;=2026-12-31" in body
 
     def test_combined_params(self):
         self._mock_207()
-        grep(pattern="report", mediatype="pdf", modified_after="2026-01-01", modified_before="2026-06-30")
+        search(query="report", mediatype="pdf", modified_after="2026-01-01", modified_before="2026-06-30")
         body = self.mock_request.call_args.kwargs.get("content", "")
-        assert "content:report" in body
+        assert "(name:*report* OR content:report)" in body
         assert "mediatype:pdf" in body
         assert "mtime&gt;=2026-01-01" in body
         assert "mtime&lt;=2026-06-30" in body
 
     def test_cleans_space_href(self):
         self._mock_207()
-        result = grep(pattern="budget")
+        result = search(query="budget")
         assert result[0]["path"] == "/Documents/report.pdf"
         assert result[1]["path"] == "/Budget/2026.xlsx"
 
     def test_path_filter(self):
         self._mock_207()
-        result = grep(pattern="budget", path="/Documents")
+        result = search(query="budget", path="/Documents")
         assert len(result) == 1
         assert result[0]["path"] == "/Documents/report.pdf"
 
     def test_empty_params_returns_error(self):
-        result = grep()
+        result = search()
         assert isinstance(result, str)
         assert "Error" in result
         assert "At least one" in result
 
     def test_path_alone_not_sufficient(self):
-        result = grep(path="/Documents")
+        result = search(path="/Documents")
         assert "Error" in result
         assert "At least one" in result
 
@@ -728,7 +770,7 @@ class TestGrep:
         resp = MagicMock()
         resp.status_code = 500
         self.mock_request.return_value = resp
-        result = grep(pattern="test")
+        result = search(query="test")
         assert "Error" in result
         assert "500" in result
 
@@ -736,45 +778,50 @@ class TestGrep:
         resp = MagicMock()
         resp.status_code = 401
         self.mock_request.return_value = resp
-        result = grep(pattern="test")
+        result = search(query="test")
         assert "Authentication" in result
 
     def test_handles_501(self):
         resp = MagicMock()
         resp.status_code = 501
         self.mock_request.return_value = resp
-        result = grep(pattern="test")
+        result = search(query="test")
         assert "not available" in result
 
     def test_parses_directories(self):
         self._mock_207(xml=_SAMPLE_DIR_207)
-        result = grep(glob="Projects")
+        result = search(query="Projects")
         assert len(result) == 1
         assert result[0]["type"] == "directory"
 
     def test_respects_limit(self):
         self._mock_207()
-        grep(pattern="budget", limit=300)
+        search(query="budget", limit=300)
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "<oc:limit>200</oc:limit>" in body
 
     def test_respects_limit_minimum(self):
         self._mock_207()
-        grep(pattern="budget", limit=0)
+        search(query="budget", limit=0)
         body = self.mock_request.call_args.kwargs.get("content", "")
         assert "<oc:limit>1</oc:limit>" in body
 
 
 class TestBuildKql:
-    def test_single_content(self):
-        assert _build_kql("budget", "", "", "", "") == "content:budget"
+    def test_single_term_matches_name_or_content(self):
+        assert _build_kql("budget", "", "", "", "") == "(name:*budget* OR content:budget)"
 
-    def test_multi_word_content_and(self):
-        assert _build_kql("quarterly budget", "", "", "", "") == "content:quarterly AND content:budget"
+    def test_multi_word_terms_ored_and_grouped(self):
+        assert _build_kql("quarterly budget", "", "", "", "") == (
+            "((name:*quarterly* OR content:quarterly) OR (name:*budget* OR content:budget))"
+        )
 
-    def test_three_word_content_and(self):
+    def test_three_word_terms_ored_and_grouped(self):
         result = _build_kql("q4 financial report", "", "", "", "")
-        assert result == "content:q4 AND content:financial AND content:report"
+        assert result == (
+            "((name:*q4* OR content:q4) OR (name:*financial* OR content:financial) "
+            "OR (name:*report* OR content:report))"
+        )
 
     def test_single_name(self):
         assert _build_kql("", "*.pdf", "", "", "") == "name:*.pdf"
@@ -787,7 +834,10 @@ class TestBuildKql:
 
     def test_combined(self):
         result = _build_kql("report", "*.pdf", "document", "2026-01-01", "2026-12-31")
-        assert result == "content:report name:*.pdf mediatype:document mtime>=2026-01-01 mtime<=2026-12-31"
+        assert result == (
+            "(name:*report* OR content:report) name:*.pdf mediatype:document "
+            "mtime>=2026-01-01 mtime<=2026-12-31"
+        )
 
     def test_empty(self):
         assert _build_kql("", "", "", "", "") == ""
@@ -799,7 +849,8 @@ class TestParseSearchResponse:
         assert len(results) == 2
         assert results[0]["name"] == "report.pdf"
         assert results[0]["size"] == 204800
-        assert results[0]["content_type"] == "application/pdf"
+        assert results[0]["created"] == "2026-01-02T09:30:00Z"
+        assert results[1]["created"] == ""
         assert results[0]["type"] == "file"
 
     def test_parses_directory(self):
