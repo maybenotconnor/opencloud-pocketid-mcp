@@ -977,7 +977,7 @@ def _glob_via_search(
 )
 def search(
     query: Annotated[str, "What to search for, in plain keywords like a search engine (NOT regex). Each word matches a file's name or its text content; words are OR'd and results are ranked by relevance, so files matching more words rank first. e.g. 'quarterly budget 2026'"] = "",
-    path: Annotated[str, "Optional: limit results to this folder, e.g. '/Documents'"] = "",
+    path: Annotated[str, "Optional folder filter, e.g. '/Documents'. Applied after the result limit, so a sparse-folder query may return fewer hits than `limit` — combine with distinctive keywords for best results."] = "",
     mediatype: Annotated[str, "Optional file-type filter: document, spreadsheet, presentation, pdf, image, video, audio, folder, archive"] = "",
     modified_after: Annotated[str, "Optional: only files modified on or after this date (ISO 8601), e.g. '2026-01-01'"] = "",
     modified_before: Annotated[str, "Optional: only files modified on or before this date (ISO 8601), e.g. '2026-12-31'"] = "",
@@ -1024,7 +1024,12 @@ def search(
 
         results = _parse_search_response(resp.text)
         if path:
-            results = [r for r in results if r.get("path", "").startswith(path)]
+            prefix = path.rstrip("/")
+            results = [
+                r for r in results
+                if (p := r.get("path", "").rstrip("/")) == prefix
+                or p.startswith(prefix + "/")
+            ]
         results.sort(key=lambda r: r.get("score", 0), reverse=True)
 
         return [
