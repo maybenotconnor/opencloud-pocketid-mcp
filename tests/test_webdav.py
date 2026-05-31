@@ -755,6 +755,63 @@ class TestSearch:
         assert len(result) == 1
         assert result[0]["path"] == "/Documents/report.pdf"
 
+    def test_path_filter_uses_segment_boundary(self):
+        # path="/Doc" must NOT match "/Documents/report.pdf" — only items
+        # at /Doc or under /Doc/ count as in-scope. Naive startswith() fails this.
+        xml = """\
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc/Doc/note.md</d:href>
+    <d:propstat><d:prop>
+      <oc:name>note.md</oc:name><d:resourcetype/>
+      <d:getcontentlength>10</d:getcontentlength>
+      <d:getlastmodified>Mon, 10 Mar 2026 12:00:00 GMT</d:getlastmodified>
+      <oc:score>0.9</oc:score>
+    </d:prop></d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc/Documents/report.pdf</d:href>
+    <d:propstat><d:prop>
+      <oc:name>report.pdf</oc:name><d:resourcetype/>
+      <d:getcontentlength>20</d:getcontentlength>
+      <d:getlastmodified>Mon, 10 Mar 2026 12:00:00 GMT</d:getlastmodified>
+      <oc:score>0.8</oc:score>
+    </d:prop></d:propstat>
+  </d:response>
+</d:multistatus>"""
+        self._mock_207(xml=xml)
+        result = search(query="note", path="/Doc")
+        paths = [r["path"] for r in result]
+        assert paths == ["/Doc/note.md"]
+
+    def test_path_filter_matches_exact_folder(self):
+        # path="/Doc" should also keep an item at exactly "/Doc" (the folder itself).
+        xml = """\
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:response>
+    <d:href>/remote.php/dav/spaces/abc/Doc</d:href>
+    <d:propstat><d:prop>
+      <oc:name>Doc</oc:name>
+      <d:resourcetype><d:collection/></d:resourcetype>
+      <d:getlastmodified>Mon, 10 Mar 2026 12:00:00 GMT</d:getlastmodified>
+      <oc:score>0.5</oc:score>
+    </d:prop></d:propstat>
+  </d:response>
+</d:multistatus>"""
+        self._mock_207(xml=xml)
+        result = search(query="doc", path="/Doc")
+        assert len(result) == 1
+        assert result[0]["path"] == "/Doc"
+
+    def test_path_filter_handles_trailing_slash(self):
+        # path="/Documents/" must behave identically to path="/Documents".
+        self._mock_207()
+        result = search(query="budget", path="/Documents/")
+        assert len(result) == 1
+        assert result[0]["path"] == "/Documents/report.pdf"
+
     def test_empty_params_returns_error(self):
         result = search()
         assert isinstance(result, str)
