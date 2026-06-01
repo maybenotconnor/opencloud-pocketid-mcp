@@ -248,12 +248,16 @@ _WALK_CONCURRENCY = 12
 _WALK_DIR_BUDGET = 800
 
 
-def _to_dt(value: str) -> datetime:
+def _to_dt(value) -> datetime:
     """Parse an ISO 8601 or RFC 1123 (HTTP) date into an aware datetime.
 
     Returns the epoch-min on failure so unparseable entries sort last under a
     most-recent-first ordering.
     """
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
     if value:
         for parse in (datetime.fromisoformat, parsedate_to_datetime):
             try:
@@ -414,7 +418,7 @@ def glob(
                             "name": posixpath.basename(item_path.rstrip("/")),
                             "path": item_path,
                             "size": item.get("content_length", 0),
-                            "modified": item.get("modified", ""),
+                            "modified": _iso(item.get("modified", "")),
                             "type": item_type,
                         })
 
