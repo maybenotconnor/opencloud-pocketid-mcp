@@ -9,6 +9,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from functools import lru_cache
 from typing import Annotated
 from urllib.parse import unquote
 
@@ -78,6 +79,7 @@ def _split_top_commas(s: str) -> list[str]:
     return parts
 
 
+@lru_cache(maxsize=256)
 def _expand_braces(pattern: str, _depth: int = 0) -> list[str]:
     """Expand brace alternations: 'a{b,c}d' -> ['abd', 'acd'].
 
@@ -248,12 +250,16 @@ _WALK_CONCURRENCY = 12
 _WALK_DIR_BUDGET = 800
 
 
-def _to_dt(value: str) -> datetime:
+def _to_dt(value) -> datetime:
     """Parse an ISO 8601 or RFC 1123 (HTTP) date into an aware datetime.
 
     Returns the epoch-min on failure so unparseable entries sort last under a
     most-recent-first ordering.
     """
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
     if value:
         for parse in (datetime.fromisoformat, parsedate_to_datetime):
             try:
@@ -414,7 +420,7 @@ def glob(
                             "name": posixpath.basename(item_path.rstrip("/")),
                             "path": item_path,
                             "size": item.get("content_length", 0),
-                            "modified": item.get("modified", ""),
+                            "modified": _iso(item.get("modified", "")),
                             "type": item_type,
                         })
 
@@ -467,10 +473,14 @@ def read_file(
                     "read_file",
                     f"Image is {size / 1_048_576:.1f}MB, exceeds 5MB limit.",
                 )
-            with tempfile.NamedTemporaryFile() as tmp:
-                client.download_file(path, tmp.name)
-                with open(tmp.name, "rb") as f:
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                client.download_file(path, tmp_path)
+                with open(tmp_path, "rb") as f:
                     data = f.read()
+            finally:
+                os.unlink(tmp_path)
             return [
                 meta,
                 ImageContent(
@@ -487,10 +497,14 @@ def read_file(
                     "read_file",
                     f"File is {size / 1_048_576:.1f}MB, exceeds 5MB limit.",
                 )
-            with tempfile.NamedTemporaryFile() as tmp:
-                client.download_file(path, tmp.name)
-                with open(tmp.name, "rb") as f:
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                client.download_file(path, tmp_path)
+                with open(tmp_path, "rb") as f:
                     data = f.read()
+            finally:
+                os.unlink(tmp_path)
             return [meta, TextContent(type="text", text=base64.b64encode(data).decode("ascii"))]
 
         # Text mode
@@ -501,9 +515,11 @@ def read_file(
                 "Use binary=True for large binary files.",
             )
 
-        with tempfile.NamedTemporaryFile() as tmp:
-            client.download_file(path, tmp.name)
-            with open(tmp.name, "rb") as f:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            client.download_file(path, tmp_path)
+            with open(tmp_path, "rb") as f:
                 chunk = f.read(8192)
                 if b"\x00" in chunk:
                     return format_error(
@@ -511,8 +527,10 @@ def read_file(
                         f"File appears to be binary (detected type: {mime or 'unknown'}). "
                         "Images are returned automatically; use binary=True for other binary files.",
                     )
-            with open(tmp.name, "r", encoding="utf-8") as f:
+            with open(tmp_path, "r", encoding="utf-8") as f:
                 return [meta, TextContent(type="text", text=f.read())]
+        finally:
+            os.unlink(tmp_path)
     except ValueError as e:
         return format_error("read_file", str(e))
     except UnicodeDecodeError:
@@ -828,7 +846,7 @@ def _parse_search_response(xml_text: str) -> list[dict]:
         m = re.search(r"<(?:\w+:)?href>(.*?)</(?:\w+:)?href>", block)
         if m:
             raw_path = unquote(m.group(1))
-            cleaned = re.sub(r"^/remote\.php/dav/spaces/[^/]+", "", raw_path)
+            cleaned = re.sub(r"^/remote\.php/dav/(?:spaces|files)/[^/]+", "", raw_path)
             entry["path"] = cleaned or "/"
         else:
             entry["path"] = ""
@@ -839,7 +857,10 @@ def _parse_search_response(xml_text: str) -> list[dict]:
             entry["type"] = "file"
 
         m = re.search(r"<(?:\w+:)?getcontentlength>(.*?)</(?:\w+:)?getcontentlength>", block)
-        entry["size"] = int(m.group(1)) if m else 0
+        try:
+            entry["size"] = int(m.group(1)) if m else 0
+        except (ValueError, TypeError):
+            entry["size"] = 0
 
         m = re.search(r"<(?:\w+:)?getlastmodified>(.*?)</(?:\w+:)?getlastmodified>", block)
         entry["modified"] = m.group(1) if m else ""
@@ -848,7 +869,10 @@ def _parse_search_response(xml_text: str) -> list[dict]:
         entry["created"] = m.group(1) if m else ""
 
         m = re.search(r"<oc:score>(.*?)</oc:score>", block)
-        entry["score"] = float(m.group(1)) if m else 0.0
+        try:
+            entry["score"] = float(m.group(1)) if m else 0.0
+        except (ValueError, TypeError):
+            entry["score"] = 0.0
 
         results.append(entry)
 
@@ -920,23 +944,17 @@ def _glob_via_search(
     glob semantics. Returns None (so the caller falls back to the walk) when the
     index is unavailable or the request fails.
     """
-    # A braced pattern expands to several name filters; query each, dedupe by
-    # path, then post-filter with the full (braced) matcher.
+    # Build one combined KQL query for all brace-expansion alternatives so a
+    # single REPORT request replaces N serial ones.
     name_filters = {_glob_search_name(p) for p in _expand_braces(pattern)}
-    raw: list[dict] = []
-    seen: set[str] = set()
-    index_ok = False
-    for nf in name_filters:
-        batch = _search_index(_build_kql("", nf, "", "", ""), want=limit)
-        if batch is None:
-            continue
-        index_ok = True
-        for r in batch:
-            path = r.get("path", "")
-            if path not in seen:
-                seen.add(path)
-                raw.append(r)
-    if not index_ok:
+    name_parts = [
+        f"name:{safe}"
+        for nf in name_filters
+        if (safe := re.sub(r"[^\w.*?\-/ ]", "", nf))
+    ]
+    kql = " OR ".join(name_parts) if name_parts else "name:*"
+    raw = _search_index(kql, want=limit)
+    if raw is None:
         return None
 
     results: list[dict] = []
@@ -947,22 +965,13 @@ def _glob_via_search(
             continue
         if not _glob_match(item_path.rstrip("/"), pattern):
             continue
-        if cutoff:
-            mod_str = r.get("modified", "")
-            if mod_str:
-                try:
-                    mod_dt = parsedate_to_datetime(mod_str)
-                    if mod_dt.tzinfo is None:
-                        mod_dt = mod_dt.replace(tzinfo=timezone.utc)
-                    if mod_dt < cutoff:
-                        continue
-                except (ValueError, TypeError):
-                    pass
+        if cutoff and _to_dt(r.get("modified", "")) < cutoff:
+            continue
         results.append({
             "name": r.get("name", "") or posixpath.basename(item_path.rstrip("/")),
             "path": item_path,
             "size": r.get("size", 0),
-            "modified": r.get("modified", ""),
+            "modified": _iso(r.get("modified", "")),
             "type": item_type,
         })
     return results
