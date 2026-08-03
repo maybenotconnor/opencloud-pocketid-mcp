@@ -1,6 +1,6 @@
 """Tests for CalDAV tools — uses mocks for the caldav client."""
 
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,6 +9,7 @@ from vobject.icalendar import utc
 
 from src.caldav_server import (
     _parse_dt,
+    _parse_dt_or_date,
     _supported_components_cache,
     complete_todo,
     create_event,
@@ -370,6 +371,16 @@ class TestFindTodos:
         result = find_todos(calendar="Personal", start="2026-03-15", end="2026-03-20")
         assert len(result) == 0
 
+    def test_filters_date_only_due_in_range(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data(due=date(2026, 3, 10))
+        calendar.todos.return_value = [mock_todo]
+
+        result = find_todos(calendar="Personal", start="2026-03-09", end="2026-03-11")
+        assert len(result) == 1
+        assert result[0]["due"] == "2026-03-10"
+
     def test_matches_by_created_when_no_due(self, mock_principal):
         _, calendar = mock_principal
         mock_todo = MagicMock()
@@ -420,6 +431,25 @@ class TestCreateTodo:
         assert "CREATED:" in ical_data
         assert "DTSTAMP:" in ical_data
 
+    def test_date_only_due_has_no_time(self, mock_principal):
+        _, calendar = mock_principal
+
+        create_todo("Personal", "Buy groceries", due="2026-08-05")
+
+        ical_data = calendar.save_todo.call_args[0][0]
+        assert "DUE;VALUE=DATE:20260805" in ical_data
+        assert "20260805T" not in ical_data
+
+    def test_datetime_due_keeps_time(self, mock_principal):
+        _, calendar = mock_principal
+
+        create_todo("Personal", "Buy groceries", due="2026-08-05T17:30")
+
+        ical_data = calendar.save_todo.call_args[0][0]
+        assert "DUE;" in ical_data or "DUE:" in ical_data
+        assert "20260805T173000" in ical_data
+        assert "VALUE=DATE:" not in ical_data
+
 
 class TestUpdateTodo:
     def test_updates_summary(self, mock_principal):
@@ -443,6 +473,32 @@ class TestUpdateTodo:
         saved_data = mock_todo.data
         assert "LAST-MODIFIED:" in saved_data
 
+    def test_datetime_due_to_date_only_drops_time_params(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data(due=datetime(2026, 3, 10, 12, 0, tzinfo=utc))
+        calendar.todo_by_uid.return_value = mock_todo
+
+        update_todo("Personal", "todo-uid-123", {"due": "2026-08-05"})
+
+        saved_data = mock_todo.data
+        assert "DUE;VALUE=DATE:20260805" in saved_data
+        assert "20260805T" not in saved_data
+        due_line = next(l for l in saved_data.splitlines() if l.startswith("DUE"))
+        assert "TZID" not in due_line
+
+    def test_date_only_due_to_datetime_drops_date_param(self, mock_principal):
+        _, calendar = mock_principal
+        mock_todo = MagicMock()
+        mock_todo.data = _make_todo_data(due=date(2026, 3, 10))
+        calendar.todo_by_uid.return_value = mock_todo
+
+        update_todo("Personal", "todo-uid-123", {"due": "2026-08-05T17:30:00+00:00"})
+
+        saved_data = mock_todo.data
+        assert "20260805T173000Z" in saved_data
+        assert "VALUE=DATE:" not in saved_data
+
 
 class TestCompleteTodo:
     def test_completes_todo(self, mock_principal):
@@ -454,6 +510,22 @@ class TestCompleteTodo:
         result = complete_todo("Personal", "todo-uid-123")
         assert "Completed todo" in result
         mock_todo.save.assert_called_once()
+
+
+class TestParseDtOrDate:
+    def test_bare_date_stays_a_date(self):
+        result = _parse_dt_or_date("2026-08-05")
+        assert type(result) is date
+
+    def test_basic_format_date(self):
+        result = _parse_dt_or_date("20260805")
+        assert type(result) is date
+        assert result == date(2026, 8, 5)
+
+    def test_datetime_string_becomes_datetime(self):
+        result = _parse_dt_or_date("2026-08-05T17:30")
+        assert isinstance(result, datetime)
+        assert result.tzinfo is not None
 
 
 class TestParseDt:

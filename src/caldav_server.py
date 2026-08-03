@@ -1,7 +1,7 @@
 """CalDAV tools for OpenCloud calendar management. 9 tools."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated
 
 import caldav
@@ -49,6 +49,20 @@ def _parse_dt(value: str) -> datetime:
         # vobject can't serialize datetime.timezone.utc — use its own utc
         dt = dt.replace(tzinfo=utc)
     return dt
+
+
+def _parse_dt_or_date(value: str) -> datetime | date:
+    """Parse ISO 8601 into a date for date-only strings, else a datetime.
+
+    A bare date like '2026-08-05' stays a date so vobject serializes it as
+    VALUE=DATE — a day-level due with no time, matching how todo apps store
+    dates without times. date.fromisoformat rejects anything with a time
+    part, so those fall through to _parse_dt.
+    """
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return _parse_dt(value)
 
 
 def _dt_to_str(dt: datetime | None) -> str | None:
@@ -446,7 +460,7 @@ def find_todos(
 def create_todo(
     calendar: Annotated[str, "Calendar name or path"],
     summary: Annotated[str, "Todo title"],
-    due: Annotated[str, "Due date/time (ISO 8601)"] = "",
+    due: Annotated[str, "Due date (ISO 8601). A bare date like '2026-08-05' sets a day-level due with no time; include a time part only when a specific time is wanted"] = "",
     priority: Annotated[int, "Priority (1=highest, 9=lowest)"] = 0,
     description: Annotated[str, "Todo description"] = "",
 ) -> dict | str:
@@ -462,7 +476,7 @@ def create_todo(
         vtodo.add("uid").value = uid
 
         if due:
-            vtodo.add("due").value = _parse_dt(due)
+            vtodo.add("due").value = _parse_dt_or_date(due)
         if priority:
             vtodo.add("priority").value = str(priority)
         if description:
@@ -493,7 +507,7 @@ def create_todo(
 def update_todo(
     calendar: Annotated[str, "Calendar name or path"],
     uid: Annotated[str, "Todo UID to update"],
-    updates: Annotated[dict, "Fields to update: summary, due, priority, description"],
+    updates: Annotated[dict, "Fields to update: summary, due (bare date = day-level, no time), priority, description"],
 ) -> str:
     """Update an existing todo. Only modifies the fields provided."""
     try:
@@ -508,10 +522,11 @@ def update_todo(
             else:
                 vtodo.add("summary").value = updates["summary"]
         if "due" in updates:
+            # Replace rather than mutate: switching between DATE and
+            # DATE-TIME in place leaves stale TZID/VALUE params behind
             if hasattr(vtodo, "due"):
-                vtodo.due.value = _parse_dt(updates["due"])
-            else:
-                vtodo.add("due").value = _parse_dt(updates["due"])
+                del vtodo.contents["due"]
+            vtodo.add("due").value = _parse_dt_or_date(updates["due"])
         if "priority" in updates:
             if hasattr(vtodo, "priority"):
                 vtodo.priority.value = str(updates["priority"])

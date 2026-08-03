@@ -101,6 +101,7 @@ Find contacts with optional text search. Omit `query` to list all, provide it to
 
 - **Find todos**: `caldav_find_todos(calendar="Personal")` — add `include_completed=True` for all, supports date/text filters
 - **Create todo**: `caldav_create_todo(calendar="Personal", summary="Buy groceries")`
+- **Due dates**: a bare date (`due="2026-08-05"`) sets a day-level due with no time — the norm for todos; only pass a datetime (`due="2026-08-05T17:00"`) when a specific time matters
 - **Update todo**: `caldav_update_todo(calendar="Personal", uid="...", updates={"summary": "Updated"})`
 - **Complete todo**: `caldav_complete_todo(calendar="Personal", uid="...")`
 
