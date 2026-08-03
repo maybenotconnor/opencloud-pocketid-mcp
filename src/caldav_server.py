@@ -1,7 +1,7 @@
 """CalDAV tools for OpenCloud calendar management. 9 tools."""
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Annotated
 
 import caldav
@@ -509,7 +509,8 @@ def update_todo(
     uid: Annotated[str, "Todo UID to update"],
     updates: Annotated[dict, "Fields to update: summary, due (bare date = day-level, no time), priority, description"],
 ) -> str:
-    """Update an existing todo. Only modifies the fields provided."""
+    """Update an existing todo. Only modifies the fields provided (changing due
+    also reconciles the todo's start/duration with it, per RFC 5545)."""
     try:
         cal = _resolve_calendar(calendar)
         todo = cal.todo_by_uid(uid)
@@ -522,11 +523,26 @@ def update_todo(
             else:
                 vtodo.add("summary").value = updates["summary"]
         if "due" in updates:
+            new_due = _parse_dt_or_date(updates["due"])
+            # RFC 5545: DUE must share DTSTART's value type, and DUE and
+            # DURATION can't coexist in a VTODO. The caller's due wins —
+            # DTSTART is coerced to the matching type, DURATION dropped.
+            if hasattr(vtodo, "dtstart"):
+                start = vtodo.dtstart.value
+                if isinstance(new_due, datetime) != isinstance(start, datetime):
+                    if isinstance(start, datetime):
+                        start = start.date()
+                    else:
+                        start = datetime.combine(start, time(0), tzinfo=_get_tz())
+                    del vtodo.contents["dtstart"]
+                    vtodo.add("dtstart").value = start
+            if hasattr(vtodo, "duration"):
+                del vtodo.contents["duration"]
             # Replace rather than mutate: switching between DATE and
             # DATE-TIME in place leaves stale TZID/VALUE params behind
             if hasattr(vtodo, "due"):
                 del vtodo.contents["due"]
-            vtodo.add("due").value = _parse_dt_or_date(updates["due"])
+            vtodo.add("due").value = new_due
         if "priority" in updates:
             if hasattr(vtodo, "priority"):
                 vtodo.priority.value = str(updates["priority"])
