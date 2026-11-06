@@ -21,4 +21,10 @@ def create_auth() -> OIDCProxy:
         jwt_signing_key=settings.jwt_signing_key,
         required_scopes=["openid", "profile", "email"],
         verify_id_token=True,
+        # Clients may register only these redirect URIs, so an authorization
+        # code can only ever go to Claude or to the user's own machine.
+        allowed_client_redirect_uris=settings.allowed_client_redirect_uris,
+        # PocketID 2.14+ rejects an RFC 8707 `resource` that is not a registered
+        # API. FastMCP still checks the client's `resource` against this server.
+        forward_resource=False,
     )

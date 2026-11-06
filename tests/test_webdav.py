@@ -484,7 +484,7 @@ class TestReadFile:
         assert "Created: 2026-01-02T09:30:00+00:00" in result[0].text
         assert "Modified: 2026-03-10T12:00:00+00:00" in result[0].text
         assert isinstance(result[1], ImageContent)
-        assert result[1].mimeType == "image/jpeg"
+        assert result[1].mime_type == "image/jpeg"
 
     def test_binary_flag_returns_metadata_and_base64(self, mock_client):
         mock_client.info.return_value = {"content_length": 100, "content_type": "application/zip"}

@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "OpenCloud MCP Server — WebDAV, CalDAV, CardDAV"
 requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=3.0",
+    "fastmcp>=4.1.6,<5",
     "uvicorn>=0.30",
     "webdav4>=0.10",
     "caldav>=1.4",

@@ -18,6 +18,24 @@ class Settings:
     # Security
     jwt_signing_key: str = os.environ.get("JWT_SIGNING_KEY", "change-me-to-a-random-secret")
 
+    # Redirect URIs OAuth clients may register (comma-separated). Default:
+    # Claude's callbacks, and loopback on any port and path (FastMCP's rule for
+    # a loopback pattern with no port) for Claude Code and other local clients.
+    allowed_client_redirect_uris: list[str] = [
+        uri.strip()
+        for uri in (
+            os.environ.get("ALLOWED_CLIENT_REDIRECT_URIS")
+            or ",".join([
+                "https://claude.ai/api/mcp/auth_callback",
+                "https://claude.com/api/mcp/auth_callback",
+                "http://localhost",
+                "http://127.0.0.1",
+                "http://[::1]",
+            ])
+        ).split(",")
+        if uri.strip()
+    ]
+
     # OpenCloud instance
     opencloud_url: str = os.environ.get("OPENCLOUD_URL", "")
     opencloud_username: str = os.environ.get("OPENCLOUD_USERNAME", "")

@@ -486,7 +486,7 @@ def read_file(
                 ImageContent(
                     type="image",
                     data=base64.b64encode(data).decode("ascii"),
-                    mimeType=mime,
+                    mime_type=mime,
                 ),
             ]
 

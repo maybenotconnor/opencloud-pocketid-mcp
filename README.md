@@ -123,6 +123,7 @@ This also works with **Claude Code** -- it supports remote MCP servers with OAut
 | `POCKETID_CLIENT_SECRET` | Yes | | From PocketID client registration |
 | `MCP_BASE_URL` | Yes | | Public URL of this server |
 | `JWT_SIGNING_KEY` | Yes | | Secret for signing session JWTs |
+| `ALLOWED_CLIENT_REDIRECT_URIS` | No | Claude + loopback | Redirect URIs OAuth clients may register, comma-separated. See [Security Notes](#security-notes) |
 | `OPENCLOUD_WEBDAV_URL` | Yes | | OpenCloud WebDAV endpoint |
 | `OPENCLOUD_USERNAME` | Yes | | WebDAV service account username |
 | `OPENCLOUD_PASSWORD` | Yes | | WebDAV service account password |
@@ -236,10 +237,12 @@ Claude.ai                    FastMCP OIDCProxy             PocketID
    |--- GET /mcp --------------->|                           |
    |<-- 401 Unauthorized --------|                           |
    |                              |                           |
-   |--- POST /register --------->|  (accepts any DCR)       |
+   |--- POST /register --------->|  (allowlisted redirects) |
    |<-- {client_id} -------------|                           |
    |                              |                           |
-   |--- GET /authorize --------->|--- GET /authorize ------->|
+   |--- GET /authorize --------->|                           |
+   |<-- consent page ------------|  (bound to this browser)  |
+   |--- POST /consent ---------->|--- GET /authorize ------->|
    |   (+ PKCE challenge)        |   (+ new PKCE challenge)  |
    |                              |                           |
    |              [User authenticates with passkey]           |
@@ -266,6 +269,35 @@ PocketID lacks Dynamic Client Registration (DCR). The OIDCProxy bridges this by 
 - **No FUSE mounts** -- pure HTTP client, no SYS_ADMIN capabilities needed
 - Backend credentials are service-account level -- **single-user deployment**
 - JWT signing key should be stable across restarts (set in `.env`)
+- **Redirect URI allowlist.** OAuth clients may register only the redirect URIs
+  in `ALLOWED_CLIENT_REDIRECT_URIS`. The default is Claude's two callbacks
+  (`https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`)
+  and loopback on any port (`http://localhost`, `http://127.0.0.1`, `http://[::1]`)
+  for Claude Code. An authorization code can only go to one of these.
+- **Consent is bound to the browser.** FastMCP 4.1.6 ties the consent form to a
+  cookie in the browser that opened it, and the PocketID callback to a cookie set
+  on approval. A sign-in link forwarded to someone else fails with HTTP 403.
+  FastMCP before 3.2.0 lacked the first check (GHSA-rww4-4w9c-7733), so
+  `pyproject.toml` requires 4.1.6 or later.
+- **PocketID v2.** The server does not forward the RFC 8707 `resource` parameter
+  to PocketID, which rejects it unless it names a registered API. The PocketID
+  callback URL must be the exact `https://<host>/auth/callback`, with no wildcard.
+
+### Revoke every client and token
+
+Do this after a security fix, after a PocketID upgrade that rotates its signing
+keys, or if a token may have leaked. Put a new `JWT_SIGNING_KEY` in `.env`, then
+recreate the container:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # new JWT_SIGNING_KEY
+docker compose up -d --force-recreate
+```
+
+The new key invalidates every access and refresh token the server has issued.
+The OAuth store (registered clients, stored PocketID tokens) lives inside the
+container, in a folder named after the key, so recreating the container deletes
+it. Then remove and re-add the connector in Claude.
 
 ---
 
