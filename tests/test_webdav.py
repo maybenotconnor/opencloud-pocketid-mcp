@@ -469,6 +469,7 @@ class TestReadFile:
             "modified": "Mon, 10 Mar 2026 12:00:00 GMT",
         }
         with patch("src.webdav_server.tempfile.NamedTemporaryFile") as mock_tmp, \
+             patch("src.webdav_server.os.unlink"), \
              patch("builtins.open", create=True) as mock_open:
             mock_tmp.return_value.__enter__ = lambda s: s
             mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
@@ -489,6 +490,7 @@ class TestReadFile:
     def test_binary_flag_returns_metadata_and_base64(self, mock_client):
         mock_client.info.return_value = {"content_length": 100, "content_type": "application/zip"}
         with patch("src.webdav_server.tempfile.NamedTemporaryFile") as mock_tmp, \
+             patch("src.webdav_server.os.unlink"), \
              patch("builtins.open", create=True) as mock_open:
             mock_tmp.return_value.__enter__ = lambda s: s
             mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
@@ -510,6 +512,7 @@ class TestReadFile:
             "modified": "Mon, 10 Mar 2026 12:00:00 GMT",
         }
         with patch("src.webdav_server.tempfile.NamedTemporaryFile") as mock_tmp, \
+             patch("src.webdav_server.os.unlink"), \
              patch("builtins.open", create=True) as mock_open:
             mock_tmp.return_value.__enter__ = lambda s: s
             mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
